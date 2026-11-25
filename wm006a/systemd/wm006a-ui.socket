@@ -1,0 +1,15 @@
+[Unit]
+Description=006A disposable VM ui socket
+ConditionVirtualization=vm
+
+[Socket]
+ListenStream=/run/wm006a/ui/sock
+Accept=no
+Service=wm006a-signer.service
+FileDescriptorName=ui
+SocketUser=root
+SocketGroup=wm006a-ui
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+Backlog=16

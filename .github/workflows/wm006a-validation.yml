@@ -1,0 +1,78 @@
+name: wm006a lab validation
+
+# Manual only. Runs the 006A synthetic signer/gateway, isolation and Flatpak checks in a
+# disposable Fedora Kinoite VM. Synthetic data only; no secrets are used or required.
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_version:
+        description: "Fedora version for the guest (blank = newest stable)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wm006a-validation
+  cancel-in-progress: false
+
+jobs:
+  wm006a:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      FEDORA_VERSION: ${{ inputs.fedora_version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Check and enable KVM
+        run: bash scripts/host/enable-kvm.sh
+
+      - name: Free disk space
+        run: bash scripts/host/free-disk.sh
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils skopeo podman \
+            flatpak flatpak-builder tesseract-ocr python3-pil
+          flatpak --version; flatpak-builder --version; tesseract --version | head -1
+
+      - name: Resolve Kinoite image
+        run: bash scripts/host/resolve-image.sh
+
+      - name: Build Kinoite disk image
+        run: bash scripts/host/build-image.sh
+
+      - name: Build wm006a artifacts (native, desktop in GNOME 50 SDK, Flatpak bundle)
+        run: bash wm006a-lab/host/build-artifacts.sh
+
+      - name: Run lab phases in the VM
+        run: bash wm006a-lab/host/run-lab.sh
+
+      - name: Summarize results
+        if: always()
+        run: bash wm006a-lab/host/summarize.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wm006a-lab-results
+          path: ${{ env.WORK }}/results/wm006a
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail on failed checks
+        run: |
+          f="$WORK/results/wm006a/results.tsv"
+          [ -s "$f" ] || { echo "::error::no results"; exit 1; }
+          n=$(grep -c '^FAIL' "$f" || true); b=$(grep -c '^BLOCKED' "$f" || true)
+          echo "FAIL=$n BLOCKED=$b"
+          grep -E '^(FAIL|BLOCKED)' "$f" | while IFS=$'\t' read -r st s c d; do echo "::warning title=$st $s/$c::$d"; done
+          [ "$n" -eq 0 ]

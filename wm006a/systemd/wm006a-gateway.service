@@ -1,0 +1,26 @@
+[Unit]
+Description=006A disposable VM synthetic gateway
+ConditionVirtualization=vm
+Requires=wm006a-gateway.socket
+After=wm006a-gateway.socket
+
+[Service]
+Sockets=wm006a-gateway.socket
+User=wm006a-gateway
+EnvironmentFile=/etc/wm006a/peers
+ExecStart=/var/opt/wm006a/current/bin/wm006a-native system-gateway
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ProtectProc=invisible
+UMask=0077
+LimitCORE=0
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX

@@ -20,7 +20,7 @@ start() {
     -device virtio-rng-pci -vga virtio -display none \
     -monitor unix:"$MON",server,nowait \
     -serial file:"$OUT/serial-console.log" \
-    -pidfile "$PIDF" -daemonize
+    -pidfile "$PIDF" -daemonize ${VM_EXTRA_ARGS:-}
 }
 
 wait_ssh() {

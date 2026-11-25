@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Wallet Manager 006A
+Exec=wm006a-desktop
+Icon=org.sinteza.WalletManagerLab
+Terminal=false
+Categories=Utility;

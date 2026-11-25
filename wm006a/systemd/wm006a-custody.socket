@@ -1,0 +1,15 @@
+[Unit]
+Description=006A disposable VM custody socket
+ConditionVirtualization=vm
+
+[Socket]
+ListenStream=/run/wm006a/custody/sock
+Accept=no
+Service=wm006a-signer.service
+FileDescriptorName=custody
+SocketUser=root
+SocketGroup=wm006a-custody
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+Backlog=16

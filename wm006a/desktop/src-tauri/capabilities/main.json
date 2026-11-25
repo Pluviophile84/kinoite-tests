@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Synthetic local IPC health check for the main window.",
+  "windows": ["main"],
+  "permissions": ["allow-local-ping"]
+}

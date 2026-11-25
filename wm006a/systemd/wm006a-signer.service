@@ -1,0 +1,30 @@
+[Unit]
+Description=006A disposable VM synthetic signer
+ConditionVirtualization=vm
+Requires=wm006a-ui.socket wm006a-custody.socket wm006a-gateway.socket
+After=wm006a-ui.socket wm006a-custody.socket wm006a-gateway.socket
+
+[Service]
+Sockets=wm006a-ui.socket wm006a-custody.socket
+User=wm006a-signer
+SupplementaryGroups=wm006a-gateway
+EnvironmentFile=/etc/wm006a/peers
+ExecStartPre=/var/opt/wm006a/current/bin/wm006a-native ip-probe
+ExecStart=/var/opt/wm006a/current/bin/wm006a-native system-signer
+StateDirectory=wm006a-signer
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ProtectProc=invisible
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+LimitCORE=0

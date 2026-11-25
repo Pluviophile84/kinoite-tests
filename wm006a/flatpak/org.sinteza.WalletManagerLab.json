@@ -1,0 +1,27 @@
+{
+  "app-id": "org.sinteza.WalletManagerLab",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "50",
+  "sdk": "org.gnome.Sdk",
+  "command": "wm006a-desktop",
+  "finish-args": [
+    "--socket=wayland",
+    "--filesystem=/run/wm006a/ui:ro"
+  ],
+  "modules": [
+    {
+      "name": "wm006a-desktop",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm755 wm006a-desktop /app/bin/wm006a-desktop",
+        "install -Dm644 org.sinteza.WalletManagerLab.desktop /app/share/applications/org.sinteza.WalletManagerLab.desktop",
+        "install -Dm644 icon.png /app/share/icons/hicolor/32x32/apps/org.sinteza.WalletManagerLab.png"
+      ],
+      "sources": [
+        { "type": "file", "path": "stage/wm006a-desktop" },
+        { "type": "file", "path": "org.sinteza.WalletManagerLab.desktop" },
+        { "type": "file", "path": "../desktop/src-tauri/icons/icon.png" }
+      ]
+    }
+  ]
+}

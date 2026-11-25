@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/**"
+      - ".github/workflows/kinoite-vm-tests.yml"
       - "image/**"
       - "scripts/**"
       - "tests/**"
