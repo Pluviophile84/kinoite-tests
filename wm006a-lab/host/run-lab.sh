@@ -50,57 +50,82 @@ if [[ -f "$stage/org.sinteza.WalletManagerLab.flatpak" ]]; then
   sleep 20; $GUI shot 00-desktop >/dev/null 2>&1
   phase 04-sandbox
 
+  GUI_REQ="flatpak-app-launches baseline-roundtrip endpoint-absent-visible-error restore-socket-signer-stopped fresh-success-after-restore new-signer-activation same-window-throughout gui-selinux-labels"
   if [[ $have_gui -eq 1 ]]; then
-    launch_and_render() {  # launch_and_render SHOTNAME -> 0 if the roster UI is on screen
-      g launch >/dev/null
-      if $GUI wait-text "Test local IPC" 90 "$1" > "$EVD/gui-$1.txt" 2>&1; then echo default; return 0; fi
-      # Software-rendered VMs sometimes need WebKit's DMA-BUF renderer off; recorded if used.
-      g launch WEBKIT_DISABLE_DMABUF_RENDERER=1 >/dev/null
-      $GUI wait-text "Test local IPC" 90 "$1-fallback" >> "$EVD/gui-$1.txt" 2>&1 && { echo WEBKIT_DISABLE_DMABUF_RENDERER=1; return 0; }
+    gl="$EVD/gui-sequence.txt"; : > "$gl"
+    st() { g state | tee -a "$gl"; }                       # one line of key=value pairs
+    gv() { sed -n "s/.* $1=\([^ ]*\).*/\1/p" <<<" $2"; }    # gv KEY STATE_LINE
+    step() { printf '\n## %s\n' "$*" >> "$gl"; }
+    launch_and_render() {
+      g launch >> "$gl"
+      if $GUI wait-text "Test local IPC" 90 "$1" >> "$gl" 2>&1; then echo default; return 0; fi
+      g launch WEBKIT_DISABLE_DMABUF_RENDERER=1 >> "$gl"   # software-rendered VM fallback, recorded
+      $GUI wait-text "Test local IPC" 90 "$1-fallback" >> "$gl" 2>&1 && { echo WEBKIT_DISABLE_DMABUF_RENDERER=1; return 0; }
       return 1
     }
-    # (a) Negative control: endpoint absent -> visible error.
-    g sockets-stop > "$EVD/gui-control.txt"
-    if mode=$(launch_and_render 10-launch-no-endpoint); then
-      hres PASS gui flatpak-app-launches "roster rendered (renderer: $mode)"
-      $GUI wait-text "LAB-100" 5 11-roster-row100 >/dev/null 2>&1 || $GUI wait-text "LAB-001" 5 11-roster-row1 >/dev/null 2>&1 \
+    # One Flatpak window for the whole sequence. Start: sockets listening, signer/gateway stopped.
+    g sockets-start >> "$gl"; g services-stop >> "$gl"
+    step "S1 launch the Flatpak app once"
+    if mode=$(launch_and_render 10-launch); then
+      s1=$(st); app_pid=$(gv app_pid "$s1"); app_inv=$(gv app_inv "$s1")
+      hres PASS gui flatpak-app-launches "roster rendered (renderer: $mode), app pid $app_pid"
+      { $GUI wait-text "LAB-100" 5 11-roster >/dev/null 2>&1 || $GUI wait-text "LAB-001" 5 11-roster >/dev/null 2>&1; } \
         && hres PASS gui roster-visible "fictional LAB-0xx rows on screen" || hres WARN gui roster-visible "row IDs not read by OCR"
-      $GUI click-text "Test local IPC" 12-click-no-endpoint >> "$EVD/gui-control.txt" 2>&1
-      $GUI wait-text "IPC unavailable" 20 13-error-no-endpoint >> "$EVD/gui-control.txt" 2>&1 \
-        && hres PASS gui endpoint-absent-visible-error "'Local IPC unavailable' shown" \
-        || hres FAIL gui endpoint-absent-visible-error "$(tail -n1 "$EVD/gui-control.txt")"
-      g quit >/dev/null
-      # (b) Positive: sockets listening, signer and gateway stopped, so only the click can start them.
-      g sockets-start >/dev/null; g services-stop >/dev/null
-      before=$(g now); state0=$(g state)
-      if launch_and_render 20-launch-with-endpoint >/dev/null; then
-        $GUI click-text "Test local IPC" 21-click >> "$EVD/gui-roundtrip.txt" 2>&1
-        if $GUI wait-text "gateway replied" 20 22-reply >> "$EVD/gui-roundtrip.txt" 2>&1; then
-          hres PASS gui flatpak-app-reaches-signer "'Signer and gateway replied.' shown"
-        else hres FAIL gui flatpak-app-reaches-signer "$(tail -n1 "$EVD/gui-roundtrip.txt")"; fi
-        state1=$(g state); since=$(sed -n 's/.*signer_since=\([0-9]*\).*/\1/p' <<<"$state1")
-        echo "before_us=$before state0=[$state0] state1=[$state1]" >> "$EVD/gui-roundtrip.txt"
-        [[ -n "$since" && "$since" -gt "$before" ]] && grep -q 'wm006a-gateway.service=active' <<<"$state1" \
-          && hres PASS gui signer-activated-by-gui-request "signer and gateway were stopped before the click and socket-activated after it" \
-          || hres FAIL gui signer-activated-by-gui-request "$state1"
-        # (c) Reconnection after the admin restarts the UI socket and signer.
-        g restart-ui >> "$EVD/gui-reconnect.txt"; sleep 3
-        $GUI click-text "Test local IPC" 30-click-after-restart >> "$EVD/gui-reconnect.txt" 2>&1
-        $GUI wait-text "gateway replied" 20 31-reply-after-restart >> "$EVD/gui-reconnect.txt" 2>&1 \
-          && hres PASS gui reconnect-after-socket-restart "reply after restarting wm006a-ui.socket + signer" \
-          || hres FAIL gui reconnect-after-socket-restart "$(tail -n1 "$EVD/gui-reconnect.txt")"
-      else hres FAIL gui flatpak-app-reaches-signer "app did not render on second launch"; fi
-      g quit >/dev/null
+      same_window() { local now; now=$(st); [[ "$(gv app_pid "$now")" == "$app_pid" && "$(gv app_inv "$now")" == "$app_inv" && "$(gv app_active "$now")" == active ]]; }
+      ok_window=1
+
+      step "S2 baseline click with the endpoint present"
+      $GUI click-text "Test local IPC" 20-click-baseline >> "$gl" 2>&1
+      if $GUI wait-text "gateway replied" 20 21-reply-baseline >> "$gl" 2>&1; then
+        s2=$(st); inv1=$(gv signer_inv "$s2")
+        hres PASS gui baseline-roundtrip "reply shown; signer activation $inv1"
+      else hres FAIL gui baseline-roundtrip "$(tail -n1 "$gl")"; s2=$(st); inv1=$(gv signer_inv "$s2"); fi
+      same_window || ok_window=0
+
+      step "S3 stop the endpoint, click in the same window"
+      g sockets-stop >> "$gl"; s3=$(st)
+      if [[ "$(gv ui_sock "$s3")" == absent ]]; then
+        $GUI click-text "Test local IPC" 30-click-no-endpoint >> "$gl" 2>&1
+        if $GUI wait-text "IPC unavailable" 20 31-error-no-endpoint >> "$gl" 2>&1 \
+           && $GUI absent-text "gateway replied" 32-error-check >> "$gl" 2>&1; then
+          hres PASS gui endpoint-absent-visible-error "'Local IPC unavailable' shown, success text gone"
+        else hres FAIL gui endpoint-absent-visible-error "$(tail -n1 "$gl")"; fi
+      else hres FAIL gui endpoint-absent-visible-error "socket still present after stop: $s3"; fi
+      same_window || ok_window=0
+
+      step "S4 restore the socket with the signer stopped, click again"
+      g sockets-start >> "$gl"; s4=$(st)
+      if [[ "$(gv ui_sock "$s4")" == socket && "$(gv signer_active "$s4")" == inactive && "$(gv ui_socket "$s4")" == active ]]; then
+        hres PASS gui restore-socket-signer-stopped "ui socket listening, signer inactive before the click"
+      else hres FAIL gui restore-socket-signer-stopped "$s4"; fi
+      $GUI absent-text "gateway replied" 40-before-restore-click >> "$gl" 2>&1; pre_clean=$?
+      before=$(g now)
+      $GUI click-text "Test local IPC" 41-click-after-restore >> "$gl" 2>&1
+      if [[ $pre_clean -eq 0 ]] && $GUI wait-text "gateway replied" 20 42-reply-after-restore >> "$gl" 2>&1; then
+        hres PASS gui fresh-success-after-restore "screen showed no success before the click; 'Signer and gateway replied.' after it"
+      else hres FAIL gui fresh-success-after-restore "pre_clean=$pre_clean $(tail -n1 "$gl")"; fi
+      s5=$(st); inv2=$(gv signer_inv "$s5"); since2=$(gv signer_since "$s5")
+      if [[ "$(gv signer_active "$s5")" == active && -n "$inv2" && "$inv2" != "$inv1" && "${since2:-0}" -gt "$before" && "$(gv gateway_active "$s5")" == active ]]; then
+        hres PASS gui new-signer-activation "new invocation $inv2 (was $inv1), activated after the click"
+      else hres FAIL gui new-signer-activation "inv1=$inv1 state=$s5 before_us=$before"; fi
+      same_window || ok_window=0
+      [[ $ok_window -eq 1 ]] && hres PASS gui same-window-throughout "one app process ($app_pid) and unit invocation for S1-S4" \
+        || hres FAIL gui same-window-throughout "app process or invocation changed; see gui-sequence.txt"
+
+      lbl_s=$(gv signer_label "$s5"); lbl_g=$(gv gateway_label "$s5")
+      [[ "$lbl_s" == *:*:*:* && "$lbl_g" == *:*:*:* ]] && hres PASS gui gui-selinux-labels "signer=$lbl_s gateway=$lbl_g" \
+        || hres FAIL gui gui-selinux-labels "signer=$lbl_s gateway=$lbl_g"
+      g quit >> "$gl"
     else
-      hres FAIL gui flatpak-app-launches "roster never appeared on screen: $(tail -n1 "$EVD/gui-10-launch-no-endpoint.txt")"
-      for c in endpoint-absent-visible-error flatpak-app-reaches-signer reconnect-after-socket-restart; do hres BLOCKED gui "$c" "app did not render"; done
+      hres FAIL gui flatpak-app-launches "roster never appeared on screen: $(tail -n1 "$gl")"
+      for c in ${GUI_REQ#flatpak-app-launches }; do hres BLOCKED gui "$c" "app did not render"; done
     fi
     g applog > "$EVD/gui-app-journal.txt"
   else
-    for c in flatpak-app-launches flatpak-app-reaches-signer reconnect-after-socket-restart; do hres BLOCKED gui "$c" "no graphical session"; done
+    for c in $GUI_REQ; do hres BLOCKED gui "$c" "no graphical session"; done
   fi
 else
-  for c in flatpak-install flatpak-sandbox-checks flatpak-app-launches flatpak-app-reaches-signer; do hres BLOCKED flatpak "$c" "bundle was not built"; done
+  for c in flatpak-install flatpak-sandbox-checks flatpak-app-launches; do hres BLOCKED flatpak "$c" "bundle was not built"; done
 fi
 
 # Not in this run's scope (recorded so nothing is silently omitted).

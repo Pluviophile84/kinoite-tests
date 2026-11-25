@@ -25,8 +25,8 @@ cat "$EVD/summary.md"
 # Evidence excerpts for reviewers reading only the log. The signer marker is never printed.
 for f in guest/evidence/e2-probes.txt guest/evidence/selinux.txt guest/evidence/unit-config.txt \
          guest/evidence/journal-signer.txt guest/evidence/coredump-signer.txt guest/evidence/flatpak-permissions.txt \
-         guest/evidence/flatpak-shell.txt qemu-cmdline.txt gui-login.txt gui-control.txt gui-roundtrip.txt \
-         gui-reconnect.txt gui-app-journal.txt; do
+         guest/evidence/flatpak-shell.txt qemu-cmdline.txt gui-login.txt gui-sequence.txt \
+         gui-app-journal.txt; do
   [[ -f "$EVD/$f" ]] || continue
   echo "::group::evidence: $f"
   grep -av 'WM006A_TEST:' "$EVD/$f" | head -n 120

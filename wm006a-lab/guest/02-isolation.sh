@@ -33,11 +33,13 @@ evidence namei.txt namei -l /var/lib/wm006a-signer/marker
 evidence identities.txt id "$lab_operator"; evidence identities.txt id "$lab_outsider"
 evidence identities.txt id wm006a-signer; evidence identities.txt id wm006a-gateway; evidence identities.txt id wm006a-custody
 evidence selinux.txt getenforce
-evidence selinux.txt ps -Z -p "$signer_pid,$gateway_pid" -o label,pid,user,group,supgrp,comm
+evidence selinux.txt ps -p "$signer_pid,$gateway_pid" -o label,pid,user,group,supgrp,comm
 evidence selinux.txt ls -Z /run/wm006a/ui/sock /run/wm006a/custody/sock /run/wm006a/gateway/sock /var/opt/wm006a/versions/v1/bin/wm006a-native
 evidence selinux.txt ls -dZ /var/lib/wm006a-signer
 evidence selinux.txt bash -c "journalctl -b --no-pager -q | grep -i 'avc:  denied' | grep -i wm006a || echo 'no wm006a AVC denials'"
-info "signer-selinux-label" "$(ps -o label= -p "$signer_pid" 2>/dev/null)"
+lbl_s=$(ps -o label= -p "$signer_pid" 2>/dev/null | tr -d ' '); lbl_g=$(ps -o label= -p "$gateway_pid" 2>/dev/null | tr -d ' ')
+[[ "$lbl_s" == *:*:*:* && "$lbl_g" == *:*:*:* ]] && pass "selinux-labels-both-services" "signer=$lbl_s gateway=$lbl_g" \
+  || fail "selinux-labels-both-services" "signer=${lbl_s:-missing} gateway=${lbl_g:-missing}"
 st=$(stat -c '%U %a' /var/lib/wm006a-signer 2>&1); mk=$(stat -c '%U %a' /var/lib/wm006a-signer/marker 2>&1)
 [[ "$st" == "wm006a-signer 700" ]] && pass "state-dir-owner-mode" "$st" || fail "state-dir-owner-mode" "$st"
 [[ "$mk" == "wm006a-signer 600" ]] && pass "marker-owner-mode" "$mk" || fail "marker-owner-mode" "$mk"

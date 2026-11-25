@@ -59,6 +59,11 @@ jobs:
         if: always()
         run: bash wm006a-lab/host/summarize.sh
 
+      - name: Validation gate (required checks)
+        id: gate
+        if: always()
+        run: bash wm006a-lab/host/gate.sh
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
@@ -67,12 +72,3 @@ jobs:
           path: ${{ env.WORK }}/results/wm006a
           if-no-files-found: warn
           retention-days: 30
-
-      - name: Fail on failed checks
-        run: |
-          f="$WORK/results/wm006a/results.tsv"
-          [ -s "$f" ] || { echo "::error::no results"; exit 1; }
-          n=$(grep -c '^FAIL' "$f" || true); b=$(grep -c '^BLOCKED' "$f" || true)
-          echo "FAIL=$n BLOCKED=$b"
-          grep -E '^(FAIL|BLOCKED)' "$f" | while IFS=$'\t' read -r st s c d; do echo "::warning title=$st $s/$c::$d"; done
-          [ "$n" -eq 0 ]

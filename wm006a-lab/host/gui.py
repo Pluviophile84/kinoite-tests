@@ -4,6 +4,7 @@ pointer clicks through the virtio tablet. Usage:
   gui.py shot NAME
   gui.py click-text "Test local IPC" NAME
   gui.py wait-text "gateway replied" TIMEOUT NAME
+  gui.py absent-text "gateway replied" NAME   (exit 0 if the text is NOT on screen)
 Screenshots go to $OUT/wm006a/gui/NAME.png. Exit 0 on success, 1 when text is not found."""
 import json
 import os
@@ -102,6 +103,13 @@ def main():
             sys.exit(1)
         click(*pos, size)
         print(f"clicked '{phrase}' at {pos} on {size[0]}x{size[1]}")
+    elif cmd == "absent-text":
+        phrase, name = sys.argv[2], sys.argv[3]
+        pos, _, ws = find(shot(name), phrase)
+        if pos:
+            print(f"'{phrase}' still on screen at {pos}")
+            sys.exit(1)
+        print(f"'{phrase}' not on screen")
     elif cmd == "wait-text":
         phrase, timeout, name = sys.argv[2], float(sys.argv[3]), sys.argv[4]
         end = time.time() + timeout
