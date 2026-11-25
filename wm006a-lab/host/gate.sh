@@ -7,7 +7,8 @@
 set -uo pipefail
 source "$(dirname "$0")/../../scripts/host/common.sh"
 EVD="$OUT/wm006a"; mkdir -p "$EVD"
-python3 - "$EVD/results.tsv" "$REPO_ROOT/wm006a-lab/required-checks.txt" "$EVD/verdict.txt" <<'PY'
+REQ="${1:-$REPO_ROOT/wm006a-lab/required-checks.txt}"
+python3 - "$EVD/results.tsv" "$REQ" "$EVD/verdict.txt" <<'PY'
 import sys
 res_path, req_path, out_path = sys.argv[1:4]
 status = {}

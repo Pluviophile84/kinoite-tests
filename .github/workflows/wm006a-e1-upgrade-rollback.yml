@@ -1,0 +1,79 @@
+name: wm006a E1 upgrade and rollback
+
+# Manual only. E1 from wm006a/VM-EXPERIMENTS.md in a disposable Fedora Kinoite VM:
+# v1 -> v2 -> v1 atomic switches, a reboot, a real rpm-ostree deployment upgrade and an OS
+# rollback, with records and a fresh Flatpak IPC round trip after each. Synthetic data only.
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_version:
+        description: "Fedora version for the guest (blank = newest stable)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wm006a-e1
+  cancel-in-progress: false
+
+jobs:
+  e1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      FEDORA_VERSION: ${{ inputs.fedora_version }}
+      KEEP_IMAGES: "1"
+      E1_VERSIONS: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Check and enable KVM
+        run: bash scripts/host/enable-kvm.sh
+
+      - name: Free disk space
+        run: bash scripts/host/free-disk.sh
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils skopeo podman \
+            flatpak flatpak-builder elfutils tesseract-ocr python3-pil
+          flatpak --version; podman --version
+
+      - name: Resolve Kinoite image
+        run: bash scripts/host/resolve-image.sh
+
+      - name: Build Kinoite disk image (OS generation 1)
+        run: bash scripts/host/build-image.sh
+
+      - name: Build OS generation 2 and serve it locally
+        run: bash wm006a-lab/host/build-os-gen2.sh
+
+      - name: Build wm006a artifacts (v1, v2, desktop, Flatpak bundle)
+        run: bash wm006a-lab/host/build-artifacts.sh
+
+      - name: Run E1 sequence in the VM
+        run: bash wm006a-lab/host/run-e1.sh
+
+      - name: Summarize results
+        if: always()
+        run: bash wm006a-lab/host/summarize.sh
+
+      - name: Validation gate (E1 required checks)
+        if: always()
+        run: bash wm006a-lab/host/gate.sh wm006a-lab/required-checks-e1.txt
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wm006a-e1-results
+          path: ${{ env.WORK }}/results/wm006a
+          if-no-files-found: warn
+          retention-days: 30

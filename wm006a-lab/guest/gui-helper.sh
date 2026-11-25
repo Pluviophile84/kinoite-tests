@@ -43,13 +43,15 @@ case "${1:-}" in
     sv() { systemctl show "$1" -p "$2" --value; }
     lbl() { local p; p=$(sv "$1" MainPID); [[ "$p" -gt 0 ]] && ps -o label= -p "$p" | tr -d ' ' || echo none; }
     apid=$(user_ctl show wm006a-gui.service -p MainPID --value 2>/dev/null)
-    printf 'signer_active=%s signer_inv=%s signer_since=%s signer_pid=%s signer_label=%s gateway_active=%s gateway_pid=%s gateway_label=%s ui_socket=%s ui_sock=%s app_active=%s app_pid=%s app_inv=%s\n' \
+    spid=$(sv wm006a-signer.service MainPID); sexe=none
+    [[ "$spid" -gt 0 ]] && sexe=$(sha256sum "/proc/$spid/exe" 2>/dev/null | cut -c1-64)
+    printf 'signer_active=%s signer_inv=%s signer_since=%s signer_pid=%s signer_label=%s gateway_active=%s gateway_pid=%s gateway_label=%s ui_socket=%s ui_sock=%s app_active=%s app_pid=%s app_inv=%s signer_exe=%s\n' \
       "$(sv wm006a-signer.service ActiveState)" "$(sv wm006a-signer.service InvocationID)" \
       "$(sv wm006a-signer.service ActiveEnterTimestampMonotonic)" "$(sv wm006a-signer.service MainPID)" "$(lbl wm006a-signer.service)" \
       "$(sv wm006a-gateway.service ActiveState)" "$(sv wm006a-gateway.service MainPID)" "$(lbl wm006a-gateway.service)" \
       "$(sv wm006a-ui.socket ActiveState)" "$([ -S /run/wm006a/ui/sock ] && echo socket || echo absent)" \
       "$(user_ctl is-active wm006a-gui.service 2>/dev/null)" "${apid:-0}" \
-      "$(user_ctl show wm006a-gui.service -p InvocationID --value 2>/dev/null)" ;;
+      "$(user_ctl show wm006a-gui.service -p InvocationID --value 2>/dev/null)" "${sexe:-none}" ;;
   now) awk '{printf "%d\n", $1*1000000}' /proc/uptime ;;
   sockets-stop) systemctl stop wm006a-signer.service wm006a-gateway.service wm006a-ui.socket wm006a-custody.socket wm006a-gateway.socket; ls -l /run/wm006a/ui/ 2>&1 | tr '\n' ' '; echo ;;
   sockets-start) systemctl start wm006a-ui.socket wm006a-custody.socket wm006a-gateway.socket && echo started ;;

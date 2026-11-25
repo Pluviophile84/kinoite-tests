@@ -11,7 +11,7 @@ EVD="$OUT/wm006a"; mkdir -p "$ART" "$EVD"
 EV="$EVD/build-evidence.txt"; : > "$EV"
 RUST_VERSION=1.100.0
 FEDORA_IMG="registry.fedoraproject.org/fedora:${KT_FEDORA_VERSION:-45}"
-BR="$EVD/build-results.tsv"; : > "$BR"
+BR="$EVD/build-results.tsv"; touch "$BR"
 note() { printf '\n== %s\n' "$*" | tee -a "$EV"; }
 res() { printf '%s\tbuild\t%s\t%s\n' "$1" "$2" "${3:-}" | tee -a "$BR"; }
 # Lines "@@RESULT name rc" printed by the build containers become build results.
@@ -19,7 +19,7 @@ collect() { grep -a '^@@RESULT ' "$EV" | while read -r _ n rc; do
   grep -q "	$n	" "$BR" || res "$([ "$rc" = 0 ] && echo PASS || echo FAIL)" "$n" "exit $rc"; done; }
 
 note "1. Native build and unprivileged checks in $FEDORA_IMG (Rust $RUST_VERSION)"
-sudo podman run --rm -v "$WS:/w:Z" -w /w -e RUST_VERSION="$RUST_VERSION" "$FEDORA_IMG" bash -euo pipefail -c '
+sudo podman run --rm -v "$WS:/w:Z" -w /w -e RUST_VERSION="$RUST_VERSION" -e E1_VERSIONS="${E1_VERSIONS:-0}" "$FEDORA_IMG" bash -euo pipefail -c '
   dnf -y -q install gcc python3 binutils curl >/dev/null
   u=https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
   curl -sSf --proto =https --tlsv1.2 -o /tmp/rustup-init "$u"
@@ -32,12 +32,23 @@ sudo podman run --rm -v "$WS:/w:Z" -w /w -e RUST_VERSION="$RUST_VERSION" "$FEDOR
   cargo build --locked --release --manifest-path native/Cargo.toml; echo "@@RESULT native-release-build $?"
   python3 tests/local_smoke.py native/target/release/wm006a-native; echo "@@RESULT native-local-smoke $?"
   python3 tests/layout.py; echo "@@RESULT layout-schema-probe $?"
+  if [ "${E1_VERSIONS:-0}" = 1 ]; then
+    # v2: identical source, distinguishable only by its embedded GNU build ID (and therefore its hash).
+    RUSTFLAGS="-C link-arg=-Wl,--build-id=0x006a0e1000000000000000000000000000000002" CARGO_TARGET_DIR=native/target-v2 \
+      cargo build --locked --release --manifest-path native/Cargo.toml; echo "@@RESULT native-v2-release-build $?"
+  fi
   readelf -d native/target/release/wm006a-native | grep -E "NEEDED|RUNPATH|RPATH"
 ' 2>&1 | tee -a "$EV" || true
 collect
 sudo chown -R "$(id -u):$(id -g)" "$WS"
 [[ -x "$WS/native/target/release/wm006a-native" ]] || { echo "::error::native build failed"; exit 1; }
 sha256sum "$WS/native/target/release/wm006a-native" | tee "$ART/wm006a-native.sha256" | tee -a "$EV"
+if [[ "${E1_VERSIONS:-0}" == 1 && -x "$WS/native/target-v2/release/wm006a-native" ]]; then
+  cp "$WS/native/target-v2/release/wm006a-native" "$ART/wm006a-native-v2"
+  (cd "$ART" && sha256sum wm006a-native-v2 > wm006a-native-v2.sha256)
+  for b in "$WS/native/target/release/wm006a-native" "$ART/wm006a-native-v2"; do
+    echo "$(basename "$b") build-id: $(readelf -n "$b" | awk '/Build ID/{print $3}')" | tee -a "$EV"; done
+fi
 
 note "2a. Frontend build (Node $(node --version))"
 if (cd "$WS/desktop" && npm ci --ignore-scripts --no-audit --no-fund && npm run build) > "$EVD/frontend-build.log" 2>&1

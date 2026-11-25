@@ -26,7 +26,8 @@ cat "$EVD/summary.md"
 for f in guest/evidence/e2-probes.txt guest/evidence/selinux.txt guest/evidence/unit-config.txt \
          guest/evidence/journal-signer.txt guest/evidence/coredump-signer.txt guest/evidence/flatpak-permissions.txt \
          guest/evidence/flatpak-shell.txt qemu-cmdline.txt gui-login.txt gui-sequence.txt \
-         gui-app-journal.txt; do
+         gui-app-journal.txt gui-e1.txt os-gen2-dnf-upgrade.txt guest/evidence/e1-versions.sha256 \
+         guest/evidence/e1-T4-os-upgrade-db-diff.txt guest/evidence/e1-T4-os-upgrade-staged-status.txt; do
   [[ -f "$EVD/$f" ]] || continue
   echo "::group::evidence: $f"
   grep -av 'WM006A_TEST:' "$EVD/$f" | head -n 120

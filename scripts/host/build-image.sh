@@ -34,6 +34,7 @@ sudo mv "$WORK/bib-out/qcow2/disk.qcow2" "$DISK"
 sudo chown "$(id -u):$(id -g)" "$DISK"
 sudo rm -rf "$WORK/bib-out"
 log "Freeing container storage"
-sudo podman rmi -f "$LOCAL" "$BASE_IMAGE" "$BIB" >/dev/null 2>&1 || true
+if [[ "${KEEP_IMAGES:-0}" == 1 ]]; then sudo podman rmi -f "$BIB" >/dev/null 2>&1 || true
+else sudo podman rmi -f "$LOCAL" "$BASE_IMAGE" "$BIB" >/dev/null 2>&1 || true; fi
 qemu-img info "$DISK" | tee "$OUT/disk-info.txt"
 df -h "$WORK"

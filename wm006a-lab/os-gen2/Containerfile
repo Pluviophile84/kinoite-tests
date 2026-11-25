@@ -1,0 +1,11 @@
+# Generation 2 of the disposable Kinoite OS for the E1 deployment-upgrade test.
+# Built on the exact image the VM booted (generation 1), plus a real Fedora package upgrade
+# (kernel excluded so the boot path stays comparable) and a generation marker.
+ARG BASE=localhost/kinoite-kt:latest
+FROM ${BASE}
+RUN mkdir -p /usr/share/wm006a-lab \
+ && { dnf -y upgrade --refresh -x 'kernel*' > /tmp/upgrade.log 2>&1; echo "dnf_exit=$?" >> /tmp/upgrade.log; } \
+ && tail -n 60 /tmp/upgrade.log > /usr/share/wm006a-lab/dnf-upgrade-summary.txt \
+ && rm -rf /tmp/upgrade.log /var/cache/* /var/lib/dnf /var/log/dnf* \
+ && echo "os-generation=2" > /usr/share/wm006a-lab/os-generation \
+ && (bootc container lint || true)
