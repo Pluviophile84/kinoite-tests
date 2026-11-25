@@ -1,0 +1,14 @@
+# Thin test layer on top of the official Fedora Kinoite bootable container image.
+# It only adds what an unattended test VM needs; everything else is stock Kinoite.
+ARG BASE=quay.io/fedora-ostree-desktops/kinoite:latest
+FROM ${BASE}
+
+# Passwordless sudo for the throwaway "tester" user (wheel group) so tests can run unattended.
+COPY sudoers-kt /etc/sudoers.d/90-kt-wheel-nopasswd
+# Serial console as well as the normal graphical console, so boot logs can be captured.
+COPY kargs-console.toml /usr/lib/bootc/kargs.d/10-kt-console.toml
+
+RUN chmod 0440 /etc/sudoers.d/90-kt-wheel-nopasswd \
+ && systemctl enable sshd.service \
+ && (command -v bootc >/dev/null || dnf -y install bootc) \
+ && (bootc container lint || true)

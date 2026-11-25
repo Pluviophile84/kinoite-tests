@@ -1,0 +1,69 @@
+name: Kinoite VM tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_version:
+        description: "Fedora version to test (blank = newest stable)"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "image/**"
+      - "scripts/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kinoite-vm-tests
+  cancel-in-progress: true
+
+jobs:
+  vm-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      FEDORA_VERSION: ${{ inputs.fedora_version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check and enable KVM
+        run: bash scripts/host/enable-kvm.sh
+
+      - name: Free disk space
+        run: bash scripts/host/free-disk.sh
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils imagemagick skopeo podman
+          qemu-system-x86_64 --version | head -1; podman --version
+
+      - name: Resolve Kinoite image
+        run: bash scripts/host/resolve-image.sh
+
+      - name: Build Kinoite disk image
+        run: bash scripts/host/build-image.sh
+
+      - name: Boot VM and run tests
+        run: bash scripts/host/run-all.sh
+
+      - name: Summarize results
+        if: always()
+        run: bash scripts/host/summarize.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kinoite-test-results
+          path: ${{ env.WORK }}/results
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail on test failures
+        run: bash scripts/host/gate.sh
