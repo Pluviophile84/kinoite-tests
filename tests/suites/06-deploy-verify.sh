@@ -14,6 +14,6 @@ check "timer-enabled-after-reboot" systemctl is-enabled --quiet kt-heartbeat.tim
 check "timer-fired-after-reboot" wait_for 90 bash -c 'boot=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )); last=$(sudo tail -n1 /var/lib/kt/heartbeat); [ "$last" -ge "$boot" ]'
 check "flatpak-survives-deployment" bash -c 'flatpak list --app --columns=application | grep -qx org.kde.kcalc'
 check "user-linger-persisted" test -e /var/lib/systemd/linger/tester
-check "sddm-active-after-reboot" wait_for 180 systemctl is-active --quiet sddm
+check "display-manager-after-reboot" bash -c 'wait_dm() { for i in $(seq 60); do systemctl is-active --quiet display-manager.service && return 0; sleep 3; done; return 1; }; wait_dm; r=$?; echo "$(basename "$(readlink -f /etc/systemd/system/display-manager.service)") $(systemctl is-active display-manager.service)"; exit $r'
 
 check "rollback-request" sudo rpm-ostree rollback

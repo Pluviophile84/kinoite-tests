@@ -3,7 +3,9 @@ state=$(timeout 300 systemctl is-system-running --wait 2>/dev/null)
 if [[ "$state" == running ]]; then pass "system-running" "$state"
 else
   failed=$(systemctl --failed --plain --no-legend | awk '{print $1}' | tr '\n' ' ')
-  warn "system-running" "state=$state failed units: ${failed:-none}"
+  if [[ "$(xargs <<<"$failed")" == mcelog.service ]]; then
+    pass "system-running" "degraded only by mcelog.service, which needs machine-check hardware a VM lacks"
+  else warn "system-running" "state=$state failed units: ${failed:-none}"; fi
 fi
 systemd-analyze > "$ART/systemd-analyze.txt" 2>&1
 systemd-analyze blame > "$ART/systemd-blame.txt" 2>&1

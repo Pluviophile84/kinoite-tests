@@ -11,7 +11,7 @@ check "var-data-survives-rollback" sudo test -s /var/lib/kt/heartbeat
 if [[ -f /etc/systemd/system/kt-heartbeat.service ]]; then info "etc-after-rollback" "test unit still present in /etc"
 else info "etc-after-rollback" "test unit absent: /etc reverted with the deployment"; fi
 check "system-healthy-after-rollback" bash -c 's=$(timeout 300 systemctl is-system-running --wait); echo $s; [ "$s" = running ] || [ "$s" = degraded ]'
-check "sddm-active-after-rollback" wait_for 180 systemctl is-active --quiet sddm
+check "display-manager-after-rollback" bash -c 'wait_dm() { for i in $(seq 60); do systemctl is-active --quiet display-manager.service && return 0; sleep 3; done; return 1; }; wait_dm; r=$?; echo "$(basename "$(readlink -f /etc/systemd/system/display-manager.service)") $(systemctl is-active display-manager.service)"; exit $r'
 
 # Cleanup
 check "flatpak-uninstall" sudo flatpak uninstall -y --noninteractive org.kde.kcalc

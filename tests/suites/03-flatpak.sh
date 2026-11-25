@@ -24,7 +24,8 @@ check_not "sandbox-host-usr-hidden" run "$APP" -c 'test -e /usr/bin/rpm-ostree'
 check_not "sandbox-usr-readonly" run "$APP" -c 'touch /usr/kt-x'
 check "sandbox-grant-ro-dir" run --filesystem="$HOME/kt-shared:ro" "$APP" -c "cat $HOME/kt-shared/f"
 check_not "sandbox-ro-dir-not-writable" run --filesystem="$HOME/kt-shared:ro" "$APP" -c "touch $HOME/kt-shared/new"
-check "sandbox-no-network" bash -c "out=\$(flatpak run --unshare=network --command=sh $APP -c 'ls /sys/class/net'); echo \$out; [ \"\$out\" = lo ]"
+check "sandbox-no-network" bash -c "out=\$(flatpak run --unshare=network --command=sh $APP -c 'tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d \" \"'); echo ifaces=\$out; [ \"\$out\" = lo ]"
+check "sandbox-network-control" bash -c "out=\$(flatpak run --share=network --command=sh $APP -c 'tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d \" \"' | tr '\\n' ' '); echo ifaces=\$out; [ \"\$out\" != lo ]"
 check "sandbox-pid-namespace" bash -c "n=\$(flatpak run --command=sh $APP -c 'ls -d /proc/[0-9]* | wc -l'); echo procs=\$n; [ \$n -lt 15 ]"
 check "sandbox-seccomp" bash -c "flatpak run --command=sh $APP -c 'grep -E \"^Seccomp:\" /proc/self/status' | grep -Eq '2$'"
 check "sandbox-nonewprivs" bash -c "flatpak run --command=sh $APP -c 'grep NoNewPrivs /proc/self/status' | grep -Eq '1$'"
