@@ -27,7 +27,7 @@ sudo podman run --rm --privileged --pull=newer \
   -v "$WORK/config.toml:/config.toml:ro" \
   -v "$WORK/bib-out:/output" \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
-  "$BIB" --type qcow2 --rootfs ext4 --target-imgref "$BASE_IMAGE" "$LOCAL" 2>&1 \
+  "$BIB" --type qcow2 --rootfs ext4 "$LOCAL" 2>&1 \
   | tee "$OUT/bootc-image-builder.log" | grep -vE '^\s*$' | tail -n 40
 
 sudo mv "$WORK/bib-out/qcow2/disk.qcow2" "$DISK"

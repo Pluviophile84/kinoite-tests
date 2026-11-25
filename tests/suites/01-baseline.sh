@@ -13,6 +13,12 @@ check "plasma-installed" rpm -q plasma-workspace
 check "sddm-active" wait_for 180 systemctl is-active --quiet sddm
 check "root-is-composefs-or-ro" bash -c 'findmnt -no FSTYPE,OPTIONS / | tee /dev/stderr | grep -Eq "overlay|composefs|(^|,)ro(,|$)"'
 
+# The disk was built from a local test layer; point the deployment's origin at the
+# official upstream image (no new deployment is created) so update checks use the registry.
+check "origin-set-upstream" sudo bootc switch --mutate-in-place --transport registry "$(cat ~/kt-tests/base-image)"
+info "origin" "$(rpm-ostree status --json | python3 -c 'import json,sys
+print([x for x in json.load(sys.stdin)["deployments"] if x.get("booted")][0].get("container-image-reference","?"))')"
+
 # Update check against the upstream image registry (metadata only, no full download).
 out=$(timeout 600 sudo rpm-ostree upgrade --check 2>&1); rc=$?
 case $rc in

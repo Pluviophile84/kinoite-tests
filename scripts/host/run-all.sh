@@ -33,6 +33,7 @@ fi
 hostpass first-boot "SSH reachable"
 
 "$VM" ssh 'rm -rf ~/kt-tests'; "$VM" scp-to "$REPO_ROOT/tests" kt-tests
+"$VM" ssh "echo '${BASE_IMAGE:?}' > ~/kt-tests/base-image"
 
 # Phase 1: first boot
 suite 01-baseline
