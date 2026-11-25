@@ -18,7 +18,8 @@ case "${1:-}" in
     runuser -u "$op" -- sh -c "printf '[Daemon]\nAutolock=false\nLockOnResume=false\n' > '$home/.config/kscreenlockerrc'"
     systemctl restart display-manager.service
     for _ in $(seq 60); do
-      sid=$(loginctl list-sessions --no-legend | awk -v u="$op" '$3==u{print $1}' | head -n1)
+      # The graphical session is the user-class one on seat0 (systemd also lists "manager" sessions).
+      sid=$(loginctl list-sessions --no-legend | awk -v u="$op" '$3==u && $4=="seat0" && $6=="user"{print $1}' | head -n1)
       if [[ -n "$sid" ]]; then
         props=$(loginctl show-session "$sid" -p Type -p Active -p State -p Seat -p Class | tr '\n' ' ')
         if grep -q 'Active=yes' <<<"$props" && grep -q 'Type=wayland' <<<"$props"; then

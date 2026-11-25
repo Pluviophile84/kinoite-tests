@@ -70,10 +70,12 @@ sp=$(systemctl show -p MainPID --value wm006a-signer.service); gp=$(systemctl sh
 run=$( [[ "$sp" -gt 0 ]] && sha256sum "/proc/$sp/exe" | cut -c1-64 )
 [[ -n "$run" && "$run" == "$want" ]] && pass "active-binary-hash" "running signer pid $sp is $VER ($run)" || fail "active-binary-hash" "pid $sp exe ${run:-none}, expected $VER $want"
 ps -o label,pid,user,group,supgrp,comm -p "$sp,$gp" >> "$E" 2>&1
-ids=$(ps -o user:32=,group:32=,supgrp:64= -p "$sp" | xargs; echo "|"; ps -o user:32=,group:32= -p "$gp" | xargs)
-ids=$(xargs <<<"$ids")
-[[ "$ids" == "wm006a-signer wm006a-signer wm006a-gateway | wm006a-gateway wm006a-gateway" ]] \
-  && pass "service-identities" "$ids" || fail "service-identities" "$ids"
+# ps supgrp lists every group the process holds (primary included), so compare sorted sets.
+idof() { local u g s; read -r u g s < <(ps -o user:32=,group:32=,supgrp:128= -p "$1"); printf '%s %s %s' "$u" "$g" "$(tr ',' '\n' <<<"$s" | sort | paste -sd,)"; }
+sid=$(idof "$sp"); gid=$(idof "$gp")
+if [[ "$sid" == "wm006a-signer wm006a-signer wm006a-gateway,wm006a-signer" && "$gid" == "wm006a-gateway wm006a-gateway wm006a-gateway" ]]; then
+  pass "service-identities" "signer: $sid | gateway: $gid"
+else fail "service-identities" "signer: $sid | gateway: $gid"; fi
 sd=$(stat -c '%U %a' /var/lib/wm006a-signer); mk=$(stat -c '%U %a' /var/lib/wm006a-signer/marker 2>&1)
 [[ "$sd" == "wm006a-signer 700" ]] && pass "state-dir-owner-mode" "$sd" || fail "state-dir-owner-mode" "$sd"
 [[ "$mk" == "wm006a-signer 600" ]] && pass "marker-owner-mode" "$mk (regenerated at signer start: $(stat -c %y /var/lib/wm006a-signer/marker | cut -c1-19))" || fail "marker-owner-mode" "$mk"
