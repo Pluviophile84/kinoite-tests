@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils skopeo podman \
-            flatpak flatpak-builder tesseract-ocr python3-pil
+            flatpak flatpak-builder elfutils tesseract-ocr python3-pil
           flatpak --version; flatpak-builder --version; tesseract --version | head -1
 
       - name: Resolve Kinoite image

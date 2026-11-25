@@ -1,7 +1,9 @@
 # E2 isolation procedure from wm006a/VM-EXPERIMENTS.md. Positives run first so a stopped
 # service is not mistaken for a permission denial.
 probe=$PROBE
-OPEN="python3 $LAB_SRC/guest/open_probe.py"
+# Installed world-readable like the socket probe; the lab accounts cannot read the admin's home.
+install -Dm755 "$LAB_SRC/guest/open_probe.py" /var/tmp/wm006a-open-probe.py
+OPEN="python3 /var/tmp/wm006a-open-probe.py"
 
 run_probe() {  # run_probe NAME runuser-args... -- path message expected
   local name="$1"; shift; local out rc
@@ -52,6 +54,8 @@ for path in /var/lib/wm006a-signer/marker "/proc/$signer_pid/mem"; do
   for who in "$lab_operator" "$lab_outsider"; do
     label="${path/#\/proc\/$signer_pid/\/proc\/SIGNER}"
     out=$(runuser -u "$who" -- $OPEN "$path" 2>&1); rc=$?
+    # Only the probe's own one-line verdict counts; anything else means the probe did not run.
+    if ! grep -Eq '^(errno=[A-Z0-9]+|opened)$' <<<"$out"; then fail "open-denied:$who:$label" "probe did not run: $out"; continue; fi
     case $rc in
       0) pass "open-denied:$who:$label" "$out" ;;
       2) if test -e "$path"; then pass "open-denied:$who:$label" "$out (hidden from $who; root confirms PID $signer_pid path exists)"

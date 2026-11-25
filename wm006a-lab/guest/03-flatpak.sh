@@ -1,6 +1,8 @@
 # Install the built Flatpak for the synthetic operator (user installation, as in the README)
 # and confirm the effective permissions are exactly what the manifest declares.
-bundle="$LAB_SRC/org.sinteza.WalletManagerLab.flatpak"
+# The operator cannot read the admin's home, so stage the bundle where it can.
+bundle=/var/tmp/wm006a-lab-bundle/org.sinteza.WalletManagerLab.flatpak
+install -Dm644 "$LAB_SRC/org.sinteza.WalletManagerLab.flatpak" "$bundle"
 as_op_fp() { runuser -u "$lab_operator" -- flatpak --user "$@"; }
 check "flathub-remote-user" as_op_fp remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 if ! check "runtime-install" timeout 1800 runuser -u "$lab_operator" -- flatpak --user install -y --noninteractive flathub org.gnome.Platform//50; then
