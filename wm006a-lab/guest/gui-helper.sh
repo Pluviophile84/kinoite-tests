@@ -24,7 +24,11 @@ case "${1:-}" in
         props=$(loginctl show-session "$sid" -p Type -p Active -p State -p Seat -p Class | tr '\n' ' ')
         if grep -q 'Active=yes' <<<"$props" && grep -q 'Type=wayland' <<<"$props"; then
           for _ in $(seq 40); do  # wait for the compositor to export WAYLAND_DISPLAY
-            user_ctl show-environment 2>/dev/null | grep -q '^WAYLAND_DISPLAY=' && { echo "session $sid $props"; exit 0; }
+            if user_ctl show-environment 2>/dev/null | grep -q '^WAYLAND_DISPLAY='; then
+              sleep 15   # let first-login autostart apps appear, then close the Welcome Center if it did
+              wc=""; pkill -u "$op" -f '(^|/)plasma-welcome' 2>/dev/null && wc=" (closed Welcome Center)"
+              echo "session $sid $props$wc"; exit 0
+            fi
             sleep 3; done
           echo "session $sid $props but no WAYLAND_DISPLAY in user manager"; exit 1
         fi
@@ -36,6 +40,8 @@ case "${1:-}" in
   launch)
     shift; envs=(); for e in "$@"; do envs+=(--env="$e"); done
     user_ctl stop wm006a-gui.service >/dev/null 2>&1; user_ctl reset-failed wm006a-gui.service >/dev/null 2>&1
+    # Fedora's first-login Welcome Center (plasma-welcome) can cover the test window; close it if open.
+    if pkill -u "$op" -f '(^|/)plasma-welcome' 2>/dev/null; then echo "closed Welcome Center"; sleep 2; fi
     systemd-run --machine="$op@.host" --user --quiet --unit=wm006a-gui --collect \
       flatpak run "${envs[@]}" "$APP" && echo "launched ${envs[*]:-}" ;;
   quit) user_ctl stop wm006a-gui.service 2>&1; echo stopped ;;
