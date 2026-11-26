@@ -14,7 +14,7 @@ expect() {  # expect NAME EXPECTED ACTUAL
 }
 plan() { echo "id=$1 from=LAB-001 to=LAB-002 amount=${2:-5} unit=TESTUNIT memo=synthetic"; }
 digest() {  # independent digest of the canonical plan (sorted key=value joined by ;)
-  python3 -c 'import hashlib,sys; f=dict(w.split("=",1) for w in sys.argv[1:]); print("sha256:"+hashlib.sha256(";".join(f"{k}={f[k]}" for k in sorted(f)).encode()).hexdigest())' $(plan "$1" "$2")
+  python3 -c 'import hashlib,sys; f=dict(w.split("=",1) for w in sys.argv[1:]); print("sha256:"+hashlib.sha256(";".join(f"{k}={f[k]}" for k in sorted(f)).encode()).hexdigest())' $(plan "$1" "${2:-}")
 }
 records() { ls "$REC" 2>/dev/null | sort | tr '\n' ' '; }
 
