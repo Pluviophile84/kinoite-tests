@@ -1,0 +1,78 @@
+name: wm006a E3 uinput policy
+
+# Manual only. Guest-only policy for the E3 console: a udev rule removes the uaccess/seat tags from
+# /dev/uinput so the active-seat (operator) user gets no write access. From a clean boot it is
+# verified with Plasma active, after relogin and after reboot, with the original held-descriptor
+# attack and a normal console approval each time. Physical checks stay BLOCKED. Synthetic data.
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_version:
+        description: "Fedora version for the guest (blank = newest stable)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wm006a-e3uinput
+  cancel-in-progress: false
+
+jobs:
+  e3uinput:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      FEDORA_VERSION: ${{ inputs.fedora_version }}
+      SKIP_DESKTOP: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Console agent local test (pseudo-terminal)
+        run: |
+          mkdir -p "$RUNNER_TEMP/e3con"
+          python3 wm006a-lab/e3/test_console_local.py wm006a-lab/e3 2>/dev/null | tee "$RUNNER_TEMP/e3con/local-test.txt"
+
+      - name: Check and enable KVM
+        run: bash scripts/host/enable-kvm.sh
+
+      - name: Free disk space
+        run: bash scripts/host/free-disk.sh
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils skopeo podman
+          mkdir -p "$WORK/results/wm006a" && cp "$RUNNER_TEMP/e3con/local-test.txt" "$WORK/results/wm006a/e3con-local-test.txt"
+          awk '{s=$1; $1=""; sub(/^ /,""); n=$1; $1=""; sub(/^ /,""); if (s=="PASS"||s=="FAIL") printf "%s\te3con-local\t%s\t%s\n", s, n, $0}' \
+            "$RUNNER_TEMP/e3con/local-test.txt" > "$WORK/results/wm006a/build-results.tsv"
+
+      - name: Resolve Kinoite image
+        run: bash scripts/host/resolve-image.sh
+
+      - name: Build Kinoite disk image
+        run: bash scripts/host/build-image.sh
+
+      - name: Build wm006a native binary
+        run: bash wm006a-lab/host/build-artifacts.sh
+
+      - name: Apply uinput policy and verify in the VM
+        run: bash wm006a-lab/host/run-e3uinput.sh
+
+      - name: Summarize results
+        if: always()
+        run: bash wm006a-lab/host/summarize.sh
+
+      - name: Validation gate (E3 uinput policy required checks)
+        if: always()
+        run: bash wm006a-lab/host/gate.sh wm006a-lab/required-checks-e3uinput.txt
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wm006a-e3uinput-results
+          path: ${{ env.WORK }}/results/wm006a
+          if-no-files-found: warn
+          retention-days: 30
