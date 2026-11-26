@@ -9,6 +9,16 @@ user_ctl() { systemctl --machine="$op@.host" --user "$@"; }
 
 case "${1:-}" in
   login)
+    # Reuse an existing active graphical session; restarting the display manager would end it.
+    sid=$(loginctl list-sessions --no-legend | awk -v u="$op" '$3==u && $4=="seat0" && $6=="user"{print $1}' | head -n1)
+    if [[ -n "$sid" ]]; then
+      props=$(loginctl show-session "$sid" -p Type -p Active -p State -p Seat -p Class | tr '\n' ' ')
+      if grep -q 'Active=yes' <<<"$props" && grep -q 'Type=wayland' <<<"$props" \
+         && user_ctl show-environment 2>/dev/null | grep -q '^WAYLAND_DISPLAY='; then
+        wc=""; pkill -u "$op" -f '(^|/)plasma-welcome' 2>/dev/null && wc=" (closed Welcome Center)"
+        echo "session $sid $props(existing)$wc"; exit 0
+      fi
+    fi
     mkdir -p /etc/plasmalogin.conf.d
     printf '[Autologin]\nUser=%s\nSession=plasma.desktop\nRelogin=false\n' "$op" > /etc/plasmalogin.conf.d/90-wm006a-lab.conf
     # Keep first-login dialogs from covering the test window (operator-only, synthetic account).
