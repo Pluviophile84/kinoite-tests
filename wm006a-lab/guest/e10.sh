@@ -15,7 +15,9 @@ sv() { sed -n "s/.*\b$1=\([^ ]*\).*/\1/p" <<<"$2"; }
 pid() { sv pid "$(status)"; }
 scan() { python3 -I "$PROBE10" scan "$(pid)" "$1" 2>&1 | tee -a "$L"; }
 capture() { local s; s=$(status); python3 -I "$PROBE10" capture "$(sv pid "$s")" "$(sv key_addr "$s")" "$1" 2>&1 | tee -a "$L"; }
-signer_up() { runuser -u "$lab_operator" -- python3 "$PROBE" /run/wm006a/ui/sock 'UI_PING\n' 'OK UI+GATEWAY\n' >/dev/null 2>&1; }
+# The wm006a sockets have no [Install] section, so after a boot the admin starts the full set (E1).
+signer_up() { systemctl start wm006a-ui.socket wm006a-custody.socket wm006a-gateway.socket
+              runuser -u "$lab_operator" -- python3 "$PROBE" /run/wm006a/ui/sock 'UI_PING\n' 'OK UI+GATEWAY\n' >/dev/null 2>&1; }
 arm() {  # arm LABEL -> arms, captures, positive-control scan; echoes epoch
   signer_up
   local r; r=$(talk wm006a-custody "ARM operational")
