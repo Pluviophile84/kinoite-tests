@@ -1,0 +1,26 @@
+[Unit]
+Description=006A E3 lab console approval agent for plan %i (synthetic, inert)
+ConditionVirtualization=vm
+After=wm006a-e3-custody.socket
+
+[Service]
+Type=simple
+User=wm006a-custody
+ExecStart=/var/opt/wm006a-e3/bin/wm006a-e3-console %i
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty9
+TTYReset=yes
+TTYVHangup=yes
+RuntimeDirectory=wm006a-e3-console
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+UMask=0022

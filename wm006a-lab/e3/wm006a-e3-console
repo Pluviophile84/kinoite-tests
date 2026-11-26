@@ -1,0 +1,99 @@
+#!/usr/bin/python3 -I
+"""wm006a E3 lab console approval agent (synthetic plans, inert records). Not for real use.
+
+Runs as the custody identity on its own virtual terminal (systemd StandardInput=tty), separate
+from the operator's graphical session. For plan PLAN it asks the E3 signer for the signer-owned
+screen, shows the plan, the revision the signer would approve, its digest and a 6-digit
+confirmation code derived from the one-use challenge, then reads one line from its VT.
+It approves only if the code matches AND its own VT is the active VT when the line arrives.
+The code and challenge are never logged. Result: /run/wm006a-e3-console/result-PLAN
+"""
+import hashlib
+import os
+import re
+import socket
+import subprocess
+import sys
+import termios
+import time
+
+CUSTODY = os.environ.get("WM006A_E3_CUSTODY", "/run/wm006a-e3/custody/sock")
+ACTIVE = os.environ.get("WM006A_ACTIVE_VT_FILE", "/sys/class/tty/tty0/active")   # override only for local tests
+OUT = os.environ.get("RUNTIME_DIRECTORY", "/run/wm006a-e3-console")
+
+
+def ask(line):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect(CUSTODY)
+    s.sendall(line.encode() + b"\n")
+    out = b""
+    while chunk := s.recv(4096):
+        out += chunk
+    return out.decode()
+
+
+def field(screen, name):
+    m = re.search(rf"^\| {name}:\s+(\S+)", screen, re.M)
+    return m.group(1) if m else ""
+
+
+def provenance():
+    active = open(ACTIVE).read().strip()
+    own = os.path.basename(os.ttyname(0))
+    try:
+        seat = subprocess.run(["loginctl", "show-seat", "seat0", "-p", "ActiveSession", "--value"],
+                              capture_output=True, text=True).stdout.strip() or "-"
+    except OSError:
+        seat = "unavailable"
+    return active, own, seat
+
+
+def finish(plan, result, active, own, seat):
+    line = f"plan={plan} result={result} own_vt={own} active_vt={active} seat=seat0 seat0_active_session={seat} time={int(time.time())}"
+    print(f"console-approval {line}", file=sys.stderr, flush=True)    # journal; no code, no challenge
+    path = os.path.join(OUT, f"result-{plan}")
+    with open(path + ".tmp", "w") as f:
+        f.write(line + "\n")
+    os.chmod(path + ".tmp", 0o644)
+    os.replace(path + ".tmp", path)
+
+
+def main():
+    plan = sys.argv[1]
+    screen = ask(f"SCREEN {plan}")
+    if not screen.startswith("+"):
+        a, o, s = provenance()
+        finish(plan, f"no-screen:{screen.strip().replace(' ', '_')}", a, o, s)
+        return
+    rev = re.search(r"revision:\s+(\d+)", screen).group(1)
+    digest, challenge = field(screen, "digest"), field(screen, "challenge")
+    code = f"{int(hashlib.sha256(challenge.encode()).hexdigest(), 16) % 1_000_000:06d}"
+    shown = "\n".join(l for l in screen.splitlines() if "challenge:" not in l)   # challenge stays internal
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.write("WM006A E3 CONSOLE APPROVAL  -  signer-owned output on this virtual terminal\n\n")
+    sys.stdout.write(shown + "\n\n")
+    sys.stdout.write(f"CONFIRMATION CODE: {code}\n\n")
+    sys.stdout.write("Approve only if the plan above is what you intend.\n")
+    sys.stdout.write("Type the confirmation code and press Enter: ")
+    sys.stdout.flush()
+    termios.tcflush(0, termios.TCIFLUSH)          # nothing typed before the prompt counts
+    typed = sys.stdin.readline().strip()
+    active, own, seat = provenance()
+    if active != own:
+        finish(plan, f"rejected:inactive-vt", active, own, seat)
+        sys.stdout.write("\nREFUSED: input arrived while this terminal was not the active VT.\n")
+    elif typed != code:
+        finish(plan, "rejected:phrase-mismatch", active, own, seat)
+        sys.stdout.write("\nREFUSED: confirmation code did not match. Nothing was approved.\n")
+    else:
+        reply = ask(f"APPROVE {plan} {rev} {digest} {challenge}").strip()
+        result = f"approved:rev={rev}" if reply.startswith("APPROVED") else f"rejected:{reply.replace(' ', '_')}"
+        finish(plan, result, active, own, seat)
+        sys.stdout.write(f"\nSIGNER REPLY: {reply}\n")
+    sys.stdout.flush()
+    time.sleep(3)
+
+
+if __name__ == "__main__":
+    main()

@@ -103,6 +103,25 @@ def main():
             sys.exit(1)
         click(*pos, size)
         print(f"clicked '{phrase}' at {pos} on {size[0]}x{size[1]}")
+    elif cmd == "keys":   # gui.py keys ctrl-alt-f9   (press together, release in reverse)
+        q = Qmp(); combo = sys.argv[2].split("-")
+        ev = lambda k, d: {"type": "key", "data": {"down": d, "key": {"type": "qcode", "data": k}}}
+        q.cmd("input-send-event", events=[ev(k, True) for k in combo]); time.sleep(0.1)
+        q.cmd("input-send-event", events=[ev(k, False) for k in reversed(combo)])
+        print("sent " + sys.argv[2])
+    elif cmd == "type":   # gui.py type TEXT  (digits, lowercase letters, space; trailing Enter)
+        q = Qmp(); names = {" ": "spc", "\n": "ret", "-": "minus"}
+        for ch in sys.argv[2] + "\n":
+            k = names.get(ch, ch)
+            for d in (True, False):
+                q.cmd("input-send-event", events=[{"type": "key", "data": {"down": d, "key": {"type": "qcode", "data": k}}}])
+                time.sleep(0.04)
+        print(f"typed {len(sys.argv[2])} characters + Enter")
+    elif cmd == "ocr":    # gui.py ocr NAME -> full OCR text of the current screen
+        from PIL import Image
+        path = shot(sys.argv[2]); img = Image.open(path); w, h = img.size
+        big = os.path.join(SHOTS, ".ocr.png"); img.convert("L").resize((w * 2, h * 2)).save(big)
+        print(subprocess.run(["tesseract", big, "stdout", "--psm", "6"], capture_output=True, text=True).stdout)
     elif cmd == "qmp":   # gui.py qmp COMMAND  -> print the QMP return value as JSON
         print(json.dumps(Qmp().cmd(sys.argv[2])))
     elif cmd == "absent-text":
