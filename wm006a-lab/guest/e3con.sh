@@ -55,11 +55,25 @@ def press(*keys):
     ev(0, 0, 0)
     for k in reversed(keys): ev(1, k, 0)
     ev(0, 0, 0); time.sleep(0.05)
+vt = lambda: open("/sys/class/tty/tty0/active").read().strip()
 if sys.argv[1] == "vtswitch9":
     press(CTRL, ALT, F9)
 elif sys.argv[1] == "type":
     for ch in sys.argv[2]: press(KEY[ch])
     press(ENTER)
+elif sys.argv[1] == "hold-switch-type":
+    # One process: descriptor opened while the operator's session was active, then switch to
+    # the approval VT and keep typing through the same descriptor after the ACL is withdrawn.
+    print(f"opened while active_vt={vt()}")
+    press(CTRL, ALT, F9); time.sleep(3)
+    try:
+        os.close(os.open("/dev/uinput", os.O_WRONLY))
+        print(f"fresh open after switch: allowed (active_vt={vt()})")
+    except OSError as e:
+        print(f"fresh open after switch: errno={e.errno} (active_vt={vt()})")
+    for ch in sys.argv[2]: press(KEY[ch])
+    press(ENTER)
+    print(f"typed {len(sys.argv[2])} digits + Enter on the held descriptor (active_vt={vt()})")
 time.sleep(0.5); fcntl.ioctl(fd, UI_DEV_DESTROY)
 print(f"operator uinput {sys.argv[1]} sent")
 PY
@@ -77,8 +91,10 @@ except OSError as e: print(f"errno={e.errno} {e.strerror}")' "$1" "$2" 2>&1; }
   done
   info "uinput-acl" "$(getfacl -p /dev/uinput 2>&1 | grep -v '^#' | xargs) | $(udevadm info -q property -n /dev/uinput | grep -E '^(TAGS|CURRENT_TAGS)=' | xargs)"
   info "vcs9-perms" "$(stat -c '%U:%G %a' /dev/vcs9 /dev/vcsa9 2>&1 | xargs)"
-  r=$(runuser -u "$lab_operator" -- chvt 9 2>&1); a=$(vt_active)
-  [[ "$a" != tty9 ]] && pass "operator-cannot-switch-vt" "chvt 9 as operator: $(tail -n1 <<<"$r"); active VT still $a" || fail "operator-cannot-switch-vt" "active=$a $r"
+  b=$(vt_active); tgt=3; [[ "$b" == tty3 ]] && tgt=4
+  r=$(runuser -u "$lab_operator" -- chvt "$tgt" 2>&1); rc=$?; a=$(vt_active)
+  [[ $rc -ne 0 && "$a" == "$b" ]] && pass "operator-cannot-switch-vt" "chvt $tgt as operator failed (exit $rc: $(tail -n1 <<<"$r")); active VT stayed $a" \
+    || fail "operator-cannot-switch-vt" "exit $rc; active $b -> $a; $r"
   r=$(runuser -u "$lab_operator" -- systemctl start --no-ask-password wm006a-e3-console@P-0999.service 2>&1)
   [[ "$(systemctl is-active wm006a-e3-console@P-0999.service)" != active ]] && pass "operator-cannot-start-agent" "$(tail -n1 <<<"$r")" || fail "operator-cannot-start-agent" "agent started"
   r=$(runuser -u "$lab_operator" -- python3 -I -c 'import fcntl,termios,os

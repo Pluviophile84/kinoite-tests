@@ -104,13 +104,10 @@ hres INFO e3con-c5 guest-root-limit "guest root can read tty9 (/dev/vcs9) and in
 # C6  operator's uinput (granted by the active-session uaccess ACL): can it reach the agent's VT?
 to_vt "${op_vt#tty}" >/dev/null
 c propose P-0006 >/dev/null; c start P-0006 >/dev/null
-v0=$(c vt); u=$(c uinput vtswitch9); sleep 2; v1=$(c vt)
-note "C6 operator uinput Ctrl+Alt+F9: $v0 -> $v1 ($u)"
-hres INFO e3con-c6 operator-uinput-vt-switch "operator's virtual keyboard sent Ctrl+Alt+F9: active VT $v0 -> $v1"
-[[ "$v1" == tty9 ]] || to_vt 9 >/dev/null
 real=$(c code); echo "$real" >> "$CODES"; guess=999999; [[ "$real" == "$guess" ]] && guess=888888
-u=$(c uinput type "$guess"); r=$(wait_result P-0006)
-note "C6 operator uinput typed a guess: $u -> $r"
+v0=$(c vt); u=$(c uinput hold-switch-type "$guess"); v1=$(c vt); r=$(wait_result P-0006)
+note "C6 operator held-descriptor attempt: $v0 -> $v1 | $(tr '\n' ' ' <<<"$u") | agent: $r"
+hres INFO e3con-c6 operator-uinput-held-descriptor "active VT $v0 -> $v1; $(tr '\n' ';' <<<"$u")"
 if [[ "$r" == pending* ]]; then
   hres PASS e3con-c6 operator-cannot-inject-into-agent-vt "operator's uinput keystrokes did not reach tty9: $r"
 else
