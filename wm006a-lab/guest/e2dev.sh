@@ -28,8 +28,32 @@ shared=$(findmnt -rn -t 9p,virtiofs,nfs,nfs4,cifs,smb3,fuse.sshfs,fuse.rclone -o
 disks=$(lsblk -dn -o NAME,TYPE,SIZE | awk '$2=="disk" && $1 !~ /^zram/')
 [[ $(wc -l <<<"$disks") -eq 1 ]] && pass "single-own-disk" "$(xargs <<<"$disks")" || fail "single-own-disk" "$(tr '\n' ';' <<<"$disks")"
 ports=$(ls /dev/virtio-ports 2>/dev/null); [[ -z "$ports" ]] && pass "no-agent-channels" "no virtio-serial ports" || fail "no-agent-channels" "$ports"
-vs=$( { [[ -e /dev/vsock ]] && echo /dev/vsock; lspci -nn | grep -i 'socket'; } 2>/dev/null)
-[[ -z "$vs" ]] && pass "no-vsock" "no vsock device" || fail "no-vsock" "$vs"
+# /dev/vsock exists whenever the vsock core module is loaded, even with no transport; what matters
+# is whether a virtio-vsock device (virtio ID 0x0013) exists and whether AF_VSOCK can reach anything.
+rec bash -c 'ls -l /dev/vsock 2>&1; lsmod | grep -E "vsock|vmw_vsock|vhost" || echo "no vsock modules listed"; for d in /sys/bus/virtio/devices/*; do echo "$d $(cat $d/device)"; done'
+vs=$(python3 -I - <<'PY'
+import errno, fcntl, glob, socket, struct
+ids = [open(f).read().strip() for f in glob.glob("/sys/bus/virtio/devices/*/device")]
+dev = "0x0013" in ids
+try:
+    with open("/dev/vsock") as f:
+        cid = struct.unpack("I", fcntl.ioctl(f, 0x7b9, b"\0" * 4))[0]
+except OSError as e:
+    cid = f"error:{errno.errorcode.get(e.errno, e.errno)}"
+res = []
+for peer in (2, 3):
+    try:
+        s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM); s.settimeout(3)
+        s.connect((peer, 22)); res.append(f"cid{peer}=CONNECTED")
+    except OSError as e:
+        res.append(f"cid{peer}={errno.errorcode.get(e.errno, e.errno) if e.errno else type(e).__name__}")
+print(f"virtio_vsock_device={dev} local_cid={cid} {' '.join(res)} virtio_ids={','.join(sorted(ids))}")
+PY
+)
+# A reset, refusal or timeout means some transport answered; only "no transport" errors pass.
+if grep -q 'virtio_vsock_device=False' <<<"$vs" && grep -Eq 'cid2=(ENODEV|ENETUNREACH|EADDRNOTAVAIL) cid3=(ENODEV|ENETUNREACH|EADDRNOTAVAIL)' <<<"$vs"; then
+  pass "no-vsock" "no vsock transport: $vs"
+else fail "no-vsock" "$vs"; fi
 agents=$(pgrep -a -f 'spice-vdagent|qemu-ga|vmtoolsd' 2>/dev/null)
 [[ -z "$agents" ]] && pass "no-guest-agents-running" "none" || fail "no-guest-agents-running" "$agents"
 usb=$(ls /sys/bus/usb/devices 2>/dev/null | grep -v '^usb' | xargs)
