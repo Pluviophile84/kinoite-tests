@@ -30,13 +30,18 @@ login() {  # login SUITE : operator Plasma session (autologin); returns session 
 # Plasma is active, switches VT, types into tty9) must now fail at open; then a normal console
 # approval of the same plan on tty9 must succeed, with seat and VT recorded.
 attack_then_approve() {
-  local s="$1" plan="$2" op_vt code guess u r seat_at
-  op_vt=$(c vt); c propose "$plan" >/dev/null; c start "$plan" >/dev/null
+  local s="$1" plan="$2" atk="P-09${2: -2}" op_vt code guess u r seat_at
+  # attack on its own plan, so a successful injection cannot use up the approval dialog
+  op_vt=$(c vt); c propose "$atk" >/dev/null; c start "$atk" >/dev/null
   code=$(c code); echo "$code" >> "$CODES"; guess=999999; [[ "$code" == "$guess" ]] && guess=888888
-  u=$(c uinput hold-switch-type "$guess"); r=$(c result "$plan"); note "$s attack: $(tr '\n' ' ' <<<"$u" | cut -c1-200) -> $r"
+  u=$(c uinput hold-switch-type "$guess"); sleep 2; r=$(c result "$atk"); note "$s attack: $(tr '\n' ' ' <<<"$u" | cut -c1-200) -> $r"
   if grep -Eq 'PermissionError|Errno 13' <<<"$u" && [[ "$r" == pending* && "$(c vt)" == "$op_vt" ]]; then
     hres PASS "$s" held-descriptor-attack-blocked "operator could not open /dev/uinput with Plasma active ($(grep -Eo 'Errno 13[^:]*' <<<"$u" | head -n1)); no VT switch, agent untouched: $r"
   else hres FAIL "$s" held-descriptor-attack-blocked "$(tr '\n' ' ' <<<"$u" | cut -c1-200) | vt=$(c vt) | $r"; fi
+  "$VM" ssh "sudo systemctl stop wm006a-e3-console@$atk.service" 2>/dev/null
+  to_vt "${op_vt#tty}"
+  c propose "$plan" >/dev/null; c start "$plan" >/dev/null
+  code=$(c code); echo "$code" >> "$CODES"
   to_vt 9; $GUI shot "$s-screen" >/dev/null 2>&1; c screen > "$EVD/$s-screen.txt"
   # keystrokes from the operator's VT must not reach tty9
   to_vt "${op_vt#tty}"; $GUI type "$code" >/dev/null; sleep 3; r=$(c result "$plan")

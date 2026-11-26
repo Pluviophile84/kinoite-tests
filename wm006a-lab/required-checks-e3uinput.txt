@@ -30,13 +30,17 @@ e3-install/e3-executable-installed
 e3con-install/console-unit-verify
 e3con-install/e3-sockets-listening
 uinput-apply/policy-rule-installed
+uinput-apply/kdeconnect-uaccess-rule-overridden
 uinput-clean-boot/rebooted
 uinput-clean-boot/no-operator-session-yet
 uinput-clean-boot/no-uaccess-tag
+uinput-clean-boot/not-in-uaccess-index
 uinput-clean-boot/no-operator-acl
+uinput-clean-boot/no-user-acl-at-all
 uinput-plasma-active/operator-plasma-session
 uinput-plasma-active/plasma-session-active
 uinput-plasma-active/no-uaccess-tag
+uinput-plasma-active/not-in-uaccess-index
 uinput-plasma-active/no-operator-acl
 uinput-plasma-active/operator-uinput-write-denied
 uinput-plasma-active/held-descriptor-attack-blocked
@@ -45,6 +49,7 @@ uinput-plasma-active/console-approval-works
 uinput-relogin/operator-plasma-session
 uinput-relogin/plasma-session-active
 uinput-relogin/no-uaccess-tag
+uinput-relogin/not-in-uaccess-index
 uinput-relogin/no-operator-acl
 uinput-relogin/operator-uinput-write-denied
 uinput-relogin/new-session
@@ -52,6 +57,7 @@ uinput-reboot/rebooted
 uinput-reboot/operator-plasma-session
 uinput-reboot/plasma-session-active
 uinput-reboot/no-uaccess-tag
+uinput-reboot/not-in-uaccess-index
 uinput-reboot/no-operator-acl
 uinput-reboot/operator-uinput-write-denied
 uinput-reboot/held-descriptor-attack-blocked
