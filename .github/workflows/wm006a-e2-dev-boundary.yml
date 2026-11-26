@@ -1,0 +1,73 @@
+name: wm006a E2 development boundary
+
+# Manual only. The remaining E2 check from wm006a/VM-EXPERIMENTS.md: a target guest with the
+# synthetic wm006a fixture and a separate disposable development guest, side by side on the
+# runner. Records both hypervisor configurations and verifies the development guest cannot reach
+# the target's marker or socket paths. Synthetic data only.
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_version:
+        description: "Fedora version for both guests (blank = newest stable)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wm006a-e2dev
+  cancel-in-progress: false
+
+jobs:
+  e2dev:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      FEDORA_VERSION: ${{ inputs.fedora_version }}
+      SKIP_DESKTOP: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check and enable KVM
+        run: bash scripts/host/enable-kvm.sh
+
+      - name: Free disk space
+        run: bash scripts/host/free-disk.sh
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils skopeo podman
+          free -g; nproc
+
+      - name: Resolve Kinoite image
+        run: bash scripts/host/resolve-image.sh
+
+      - name: Build Kinoite disk image
+        run: bash scripts/host/build-image.sh
+
+      - name: Build wm006a native binary
+        run: bash wm006a-lab/host/build-artifacts.sh
+
+      - name: Run target and development guests
+        run: bash wm006a-lab/host/run-e2dev.sh
+
+      - name: Summarize results
+        if: always()
+        run: bash wm006a-lab/host/summarize.sh
+
+      - name: Validation gate (E2 development-boundary required checks)
+        if: always()
+        run: bash wm006a-lab/host/gate.sh wm006a-lab/required-checks-e2dev.txt
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wm006a-e2dev-results
+          path: |
+            ${{ env.WORK }}/results/wm006a
+            ${{ env.WORK }}/results/serial-console*.log
+          if-no-files-found: warn
+          retention-days: 30

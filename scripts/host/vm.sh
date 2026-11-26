@@ -5,7 +5,7 @@ source "$(dirname "$0")/common.sh"
 
 SSH_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
           -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=15 -o BatchMode=yes)
-BOOT_N_FILE="$WORK/boot-count"
+BOOT_N_FILE="${BOOT_N_FILE:-$WORK/boot-count}"
 
 vm_ssh() { ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" tester@127.0.0.1 "$@"; }
 alive() { [[ -f "$PIDF" ]] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
@@ -13,13 +13,13 @@ alive() { [[ -f "$PIDF" ]] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
 start() {
   local n=$(( $(cat "$BOOT_N_FILE" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$BOOT_N_FILE"
   log "Starting VM ($VM_CPUS vCPU, ${VM_MEM} MiB)"
-  qemu-system-x86_64 -name kinoite -machine q35,accel=kvm -cpu host \
+  qemu-system-x86_64 -name "$VM_NAME" -machine q35,accel=kvm -cpu host \
     -smp "$VM_CPUS" -m "$VM_MEM" \
     -drive file="$DISK",if=virtio,format=qcow2,cache=writeback,discard=unmap \
-    -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$SSH_PORT"-:22 -device virtio-net-pci,netdev=n0 \
+    -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$SSH_PORT"-:22"$VM_NET_OPTS" -device virtio-net-pci,netdev=n0 \
     -device virtio-rng-pci -vga virtio -display none \
     -monitor unix:"$MON",server,nowait \
-    -serial file:"$OUT/serial-console.log" \
+    -serial file:"$SERIAL_LOG" \
     -pidfile "$PIDF" -daemonize ${VM_EXTRA_ARGS:-}
 }
 
