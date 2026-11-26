@@ -58,12 +58,14 @@ install)
   chmod 0700 "$PROBE10"   # root-only probe
   install -o root -g root -m0644 "$LAB_SRC/e10/systemd/wm006a-e10.service" /etc/systemd/system/
   check "unit-verify" systemd-analyze verify /etc/systemd/system/wm006a-e10.service
-  systemctl daemon-reload; systemctl start wm006a-e10.service; sleep 3
+  systemctl daemon-reload; systemctl enable --now wm006a-e10.service; sleep 3
+  check "service-enabled-at-boot" systemctl is-enabled --quiet wm006a-e10.service
   check "service-running" systemctl is-active --quiet wm006a-e10.service
   s=$(status)
   [[ "$(sv state "$s")" == disarmed && "$(sv reason "$s")" == start ]] && pass "starts-disarmed" "$s" || fail "starts-disarmed" "$s"
   inh=$(systemd-inhibit --list --no-pager 2>&1 | grep wm006a-e10)
-  [[ "$(sv inhibitor "$s")" == held ]] && grep -q 'sleep:shutdown' <<<"$inh" && grep -q delay <<<"$inh" \
+  # logind may list the lock types in either order (sleep:shutdown or shutdown:sleep).
+  [[ "$(sv inhibitor "$s")" == held ]] && grep -Eq 'sleep:shutdown|shutdown:sleep' <<<"$inh" && grep -q delay <<<"$inh" \
     && pass "delay-inhibitor-held" "$(xargs <<<"$inh")" || fail "delay-inhibitor-held" "status inhibitor=$(sv inhibitor "$s"); list: $inh"
   journalctl -b -u wm006a-e10.service --no-pager -o cat | grep -q 'mlock failed' && fail "key-page-locked" "mlock failed" || pass "key-page-locked" "mlock succeeded (no failure logged)"
   info "logind-capabilities" "CanSuspend=$(busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanSuspend | cut -d' ' -f2) CanHibernate=$(busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate | cut -d' ' -f2) mem_sleep=[$(cat /sys/power/mem_sleep)] swaps=[$(tail -n +2 /proc/swaps | awk '{print $1}' | xargs)]"

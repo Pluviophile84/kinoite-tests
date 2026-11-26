@@ -37,6 +37,7 @@ setup/binary-provenance
 setup/units-verify
 e10-install/unit-verify
 e10-install/service-running
+e10-install/service-enabled-at-boot
 e10-install/starts-disarmed
 e10-install/delay-inhibitor-held
 e10-install/key-page-locked

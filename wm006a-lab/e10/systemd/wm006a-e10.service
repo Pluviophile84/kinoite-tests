@@ -23,3 +23,6 @@ RestrictNamespaces=yes
 SystemCallArchitectures=native
 UMask=0077
 LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target
