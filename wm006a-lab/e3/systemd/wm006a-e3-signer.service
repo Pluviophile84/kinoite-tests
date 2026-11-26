@@ -1,0 +1,29 @@
+[Unit]
+Description=006A E3 lab approval fixture (synthetic plans, inert records)
+ConditionVirtualization=vm
+Requires=wm006a-e3-ui.socket wm006a-e3-custody.socket
+After=wm006a-e3-ui.socket wm006a-e3-custody.socket
+
+[Service]
+Sockets=wm006a-e3-ui.socket wm006a-e3-custody.socket
+User=wm006a-signer
+EnvironmentFile=/etc/wm006a/peers
+Environment=WM006A_E3_TTL=15
+ExecStart=/var/opt/wm006a-e3/bin/wm006a-e3 signer
+StateDirectory=wm006a-e3
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ProtectProc=invisible
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+LimitCORE=0

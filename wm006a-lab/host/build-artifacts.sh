@@ -50,6 +50,10 @@ if [[ "${E1_VERSIONS:-0}" == 1 && -x "$WS/native/target-v2/release/wm006a-native
     echo "$(basename "$b") build-id: $(readelf -n "$b" | awk '/Build ID/{print $3}')" | tee -a "$EV"; done
 fi
 
+if [[ "${SKIP_DESKTOP:-0}" == 1 ]]; then
+  cp "$WS/native/target/release/wm006a-native" "$ART/"
+  echo "SKIP_DESKTOP=1: desktop app and Flatpak bundle not built for this workflow" | tee -a "$EV"; exit 0
+fi
 note "2a. Frontend build (Node $(node --version))"
 if (cd "$WS/desktop" && npm ci --ignore-scripts --no-audit --no-fund && npm run build) > "$EVD/frontend-build.log" 2>&1
 then res PASS frontend-build "tsc + vite"; else res FAIL frontend-build "see frontend-build.log"; fi

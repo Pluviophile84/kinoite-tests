@@ -1,0 +1,265 @@
+#!/usr/bin/python3 -I
+"""wm006a E3 lab approval fixture. Synthetic plans, inert approval records. Not for real use.
+
+Modes
+  wm006a-e3 signer                      systemd socket activation (FileDescriptorName ui, custody)
+  wm006a-e3 signer-local UI CUSTODY STATE OPERATOR_UID CUSTODY_UID TTL   local test mode
+  wm006a-e3 client SOCKET LINE          send one line, print the reply (exit 2 on connect error)
+
+Protocol (one ASCII line per connection, reply then close)
+  UI socket, operator UID only:
+    PROPOSE id=P-0001 from=LAB-001 to=LAB-002 amount=5 unit=TESTUNIT memo=synthetic
+      -> REVISION <plan> <rev> <digest>      (same content = same revision; changed content = rev+1)
+  Custody socket, custody UID only:
+    SCREEN <plan>        -> signer-owned ASCII screen with the latest revision, digest and a fresh
+                            one-use challenge bound to (plan, revision, digest, signer generation)
+    APPROVE <plan> <rev> <digest> <challenge>
+      -> APPROVED <plan> rev=<rev> digest=<digest>  and one inert record, or ERR <reason>
+
+A challenge is consumed before any approval record is written; a mismatched or expired use also
+consumes it. The generation changes on every signer start, so earlier challenges are rejected.
+"""
+import hashlib
+import os
+import re
+import secrets
+import selectors
+import socket
+import struct
+import sys
+import time
+
+LIMIT = 512
+FIELDS = {
+    "id": re.compile(r"P-\d{4}"),
+    "from": re.compile(r"LAB-\d{3}"),
+    "to": re.compile(r"LAB-\d{3}"),
+    "amount": re.compile(r"[1-9]\d{0,2}"),
+    "unit": re.compile(r"TESTUNIT"),
+    "memo": re.compile(r"[a-z0-9-]{1,32}"),
+}
+
+
+def parse_plan(words):
+    plan = {}
+    for word in words:
+        key, sep, value = word.partition("=")
+        if not sep or key not in FIELDS or key in plan or not FIELDS[key].fullmatch(value):
+            return None
+        plan[key] = value
+    if set(plan) != set(FIELDS) or plan["from"] == plan["to"]:
+        return None
+    return plan
+
+
+def canonical(plan):
+    return ";".join(f"{k}={plan[k]}" for k in sorted(plan)).encode()
+
+
+def digest_of(plan):
+    return "sha256:" + hashlib.sha256(canonical(plan)).hexdigest()
+
+
+class Signer:
+    def __init__(self, state, operator_uid, custody_uid, ttl):
+        self.state = state
+        self.operator_uid = operator_uid
+        self.custody_uid = custody_uid
+        self.ttl = ttl
+        try:
+            boot = open("/proc/sys/kernel/random/boot_id").read().strip().replace("-", "")[:8]
+        except OSError:
+            boot = "nobootid"
+        self.generation = f"{boot}-{secrets.token_hex(4)}"
+        self.revisions = {}   # plan id -> list of (digest, plan) ; index+1 = revision
+        self.pending = {}     # challenge -> (plan id, rev, digest, expiry)
+        self.consumed = set()
+        os.makedirs(os.path.join(state, "approvals"), mode=0o700, exist_ok=True)
+
+    # UI socket
+    def ui(self, uid, line):
+        if uid != self.operator_uid:
+            return "ERR PEER\n"
+        words = line.split()
+        if not words or words[0] != "PROPOSE":
+            return "ERR REQUEST\n"
+        plan = parse_plan(words[1:])
+        if plan is None:
+            return "ERR PLAN\n"
+        revs = self.revisions.setdefault(plan["id"], [])
+        digest = digest_of(plan)
+        if not revs or revs[-1][0] != digest:
+            revs.append((digest, plan))
+        return f"REVISION {plan['id']} {len(revs)} {digest}\n"
+
+    # Custody socket
+    def custody(self, uid, line):
+        if uid != self.custody_uid:
+            return "ERR PEER\n"
+        words = line.split()
+        if len(words) == 2 and words[0] == "SCREEN":
+            return self.screen(words[1])
+        if len(words) == 5 and words[0] == "APPROVE":
+            return self.approve(*words[1:], uid=uid)
+        return "ERR REQUEST\n"
+
+    def screen(self, plan_id):
+        revs = self.revisions.get(plan_id)
+        if not revs:
+            return "ERR UNKNOWN_PLAN\n"
+        rev = len(revs)
+        digest, plan = revs[-1]
+        challenge = f"{self.generation}.{secrets.token_hex(16)}"
+        expiry = time.time() + self.ttl
+        self.pending[challenge] = (plan_id, rev, digest, expiry)
+        when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expiry))
+        rows = [
+            "WM006A E3 SIGNER APPROVAL SCREEN  (synthetic plan, inert record)",
+            f"plan:       {plan_id}   revision: {rev}",
+            f"summary:    move {plan['amount']} {plan['unit']} from {plan['from']} to {plan['to']} ({plan['memo']})",
+            f"digest:     {digest}",
+            f"challenge:  {challenge}",
+            f"expires:    {when}  (in {self.ttl} s, one use)",
+            f"generation: {self.generation}",
+        ]
+        width = max(len(r) for r in rows) + 2
+        bar = "+" + "-" * width + "+"
+        return "\n".join([bar] + [f"| {r.ljust(width - 1)}|" for r in rows] + [bar]) + "\n"
+
+    def approve(self, plan_id, rev, digest, challenge, uid):
+        if challenge.partition(".")[0] != self.generation:
+            return "ERR STALE_GENERATION\n"
+        if challenge in self.consumed:
+            return "ERR REPLAY\n"
+        entry = self.pending.pop(challenge, None)   # atomic consumption (single-threaded loop)
+        if entry is None:
+            return "ERR UNKNOWN_CHALLENGE\n"
+        self.consumed.add(challenge)
+        bound_plan, bound_rev, bound_digest, expiry = entry
+        if time.time() > expiry:
+            return "ERR EXPIRED\n"
+        if (plan_id, rev, digest) != (bound_plan, str(bound_rev), bound_digest):
+            return "ERR BINDING\n"
+        if bound_rev != len(self.revisions.get(plan_id, [])):
+            return "ERR STALE_REVISION\n"
+        # Challenge is already consumed; only now record the (inert) approval, exactly once.
+        record = os.path.join(self.state, "approvals", f"{plan_id}-r{bound_rev}.txt")
+        try:
+            fd = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return "ERR ALREADY_APPROVED\n"
+        with os.fdopen(fd, "w") as f:
+            f.write(f"inert=true synthetic=true plan={plan_id} revision={bound_rev} digest={bound_digest} "
+                    f"approver_uid={uid} generation={self.generation} "
+                    f"challenge_sha256={hashlib.sha256(challenge.encode()).hexdigest()} "
+                    f"time={int(time.time())}\n")
+            f.flush()
+            os.fsync(f.fileno())
+        return f"APPROVED {plan_id} rev={bound_rev} digest={bound_digest}\n"
+
+
+def peer_uid(conn):
+    raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    return struct.unpack("3i", raw)[1]
+
+
+def read_line(conn):
+    conn.settimeout(2.0)
+    data = b""
+    while b"\n" not in data:
+        chunk = conn.recv(LIMIT + 1)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > LIMIT:
+            return None
+    line, _, rest = data.partition(b"\n")
+    if rest or not line or any(b < 0x20 or b > 0x7E for b in line):
+        return None   # exactly one printable-ASCII line
+    return line.decode("ascii")
+
+
+def serve(signer, listeners):
+    sel = selectors.DefaultSelector()
+    for name, sock in listeners.items():
+        sock.setblocking(True)
+        sel.register(sock, selectors.EVENT_READ, name)
+    print(f"e3 signer ready generation={signer.generation} ttl={signer.ttl}", file=sys.stderr, flush=True)
+    while True:
+        for key, _ in sel.select():
+            conn, _ = key.fileobj.accept()
+            with conn:
+                try:
+                    uid = peer_uid(conn)
+                    line = read_line(conn)
+                    if line is None:
+                        reply = "ERR REQUEST\n"
+                    else:
+                        reply = (signer.ui if key.data == "ui" else signer.custody)(uid, line)
+                    if reply.startswith("ERR PEER"):
+                        print(f"{key.data}: peer UID {uid} rejected", file=sys.stderr, flush=True)
+                    conn.sendall(reply.encode("ascii"))
+                except OSError:
+                    pass
+
+
+def activated():
+    if os.environ.get("LISTEN_PID") != str(os.getpid()):
+        sys.exit("not socket-activated")
+    names = os.environ.get("LISTEN_FDNAMES", "").split(":")
+    count = int(os.environ.get("LISTEN_FDS", "0"))
+    socks = {}
+    for i in range(count):
+        socks[names[i]] = socket.socket(fileno=3 + i)
+    if set(socks) != {"ui", "custody"}:
+        sys.exit(f"expected ui and custody sockets, got {sorted(socks)}")
+    return socks
+
+
+def client(path, line):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    try:
+        s.connect(path)
+    except OSError as e:
+        print(f"connect errno={e.errno}")
+        sys.exit(2)
+    s.sendall(line.encode("ascii") + b"\n")
+    out = b""
+    while True:
+        try:
+            chunk = s.recv(4096)
+        except OSError as e:
+            print(f"recv errno={e.errno}")
+            sys.exit(3)
+        if not chunk:
+            break
+        out += chunk
+    sys.stdout.write(out.decode("ascii", "replace"))
+    sys.exit(0 if out else 3)
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ["signer"]:
+        env = os.environ
+        signer = Signer(env.get("STATE_DIRECTORY", "/var/lib/wm006a-e3"), int(env["WM006A_OPERATOR_UID"]),
+                        int(env["WM006A_CUSTODY_UID"]), int(env.get("WM006A_E3_TTL", "15")))
+        serve(signer, activated())
+    elif args[:1] == ["signer-local"] and len(args) == 7:
+        ui, custody, state, op, cu, ttl = args[1:]
+        listeners = {}
+        for name, path in (("ui", ui), ("custody", custody)):
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.bind(path)
+            s.listen(16)
+            listeners[name] = s
+        serve(Signer(state, int(op), int(cu), int(ttl)), listeners)
+    elif args[:1] == ["client"] and len(args) == 3:
+        client(args[1], args[2])
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()
