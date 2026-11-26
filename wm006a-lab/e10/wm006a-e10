@@ -1,0 +1,290 @@
+#!/usr/bin/python3 -I
+"""wm006a E10 lab scheduler daemon. Disposable synthetic key, inert dispatch. Not for real use.
+
+Follows the E10 scheduler policy, driven by real Kinoite events:
+  preserve the grant : screen lock, session switch, logout, GUI close, GUI crash
+  disarm + zeroize   : sleep (PrepareForSleep), shutdown/reboot (PrepareForShutdown), signer
+                       failure (wm006a-signer.service stops or restarts), expiry, Stop (SIGTERM)
+  pause              : wall-clock discontinuity (fresh approval needed)
+  refuse to arm      : treasury / watch-only roles, a disk-backed swap (hibernation target)
+A delay inhibitor (systemd-inhibit) is held so the key is zeroized before sleep or shutdown.
+
+The key is 32 random bytes read straight into an mlock()ed, MADV_DONTDUMP anonymous page; it is
+never copied into a Python object. STATUS reports the page address (not the key) so a root-only
+probe can scan this process's memory.
+
+Control socket /run/wm006a-e10/ctl (peer UID decides what is allowed):
+  root:     STATUS
+  custody:  ARM [operational|treasury|watch-only]   (stands in for trusted console approval)
+  operator: HELLO (GUI attach), BYE (GUI close), DISPATCH <epoch> <row>
+"""
+import ctypes
+import mmap
+import os
+import re
+import selectors
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+KEY_LEN = 32
+TTL = int(os.environ.get("WM006A_E10_TTL", "45"))
+SPACING = 2
+SIGNER = "wm006a-signer.service"
+libc = ctypes.CDLL(None, use_errno=True)
+MADV_DONTDUMP = 16
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+class Key:
+    def __init__(self):
+        self.mm = mmap.mmap(-1, mmap.PAGESIZE, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+        self.view = (ctypes.c_char * mmap.PAGESIZE).from_buffer(self.mm)
+        self.addr = ctypes.addressof(self.view)
+        if libc.mlock(ctypes.c_void_p(self.addr), ctypes.c_size_t(mmap.PAGESIZE)) != 0:
+            log(f"mlock failed errno={ctypes.get_errno()}")
+        libc.madvise(ctypes.c_void_p(self.addr), ctypes.c_size_t(mmap.PAGESIZE), MADV_DONTDUMP)
+        self.loaded = False
+
+    def load(self):
+        fd = os.open("/dev/urandom", os.O_RDONLY)
+        try:
+            # readv fills the locked page directly; no intermediate bytes object holds the key.
+            n = os.readv(fd, [memoryview(self.mm)[:KEY_LEN]])
+        finally:
+            os.close(fd)
+        self.loaded = n == KEY_LEN
+
+    def zeroize(self):
+        ctypes.memset(ctypes.c_void_p(self.addr), 0, KEY_LEN)
+        self.loaded = False
+
+
+class Scheduler:
+    def __init__(self, operator_uid, custody_uid):
+        self.operator_uid, self.custody_uid = operator_uid, custody_uid
+        self.key = Key()
+        self.state, self.reason, self.epoch = "disarmed", "start", 0
+        self.until = 0.0
+        self.seen, self.next_dispatch = set(), 0.0
+        self.events = []               # (monotonic, name) of real events observed
+        self.signer_inv = ""
+        self.offset = time.time() - time.monotonic()
+        self.inhibitor = None
+        self.gui = {}                  # fd -> socket for attached GUI clients
+        self.take_inhibitor()
+
+    # -- inhibitor -------------------------------------------------------------------------
+    def take_inhibitor(self):
+        if self.inhibitor and self.inhibitor.poll() is None:
+            return
+        self.inhibitor = subprocess.Popen(
+            ["systemd-inhibit", "--what=sleep:shutdown", "--mode=delay", "--who=wm006a-e10",
+             "--why=zeroize synthetic key before sleep or shutdown", "sleep", "infinity"])
+
+    def release_inhibitor(self):
+        if self.inhibitor and self.inhibitor.poll() is None:
+            self.inhibitor.terminate()
+            self.inhibitor.wait(timeout=5)
+
+    # -- policy ----------------------------------------------------------------------------
+    def note(self, name):
+        self.events.append((time.monotonic(), name))
+        self.events = self.events[-64:]
+        log(f"event {name} state={self.state}")
+
+    def disarm(self, reason, terminal=False):
+        was = self.state
+        self.key.zeroize()
+        self.state = "disarmed"
+        self.reason = reason
+        self.epoch += 1
+        log(f"zeroized reason={reason} previous_state={was} epoch={self.epoch}")
+
+    def signer_state(self):
+        out = subprocess.run(["systemctl", "show", SIGNER, "-p", "ActiveState", "-p", "InvocationID"],
+                             capture_output=True, text=True).stdout
+        d = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        return d.get("ActiveState", ""), d.get("InvocationID", "")
+
+    def disk_swap(self):
+        try:
+            rows = open("/proc/swaps").read().splitlines()[1:]
+        except OSError:
+            return ["unreadable"]
+        return [r.split()[0] for r in rows if r.split() and not r.split()[0].startswith("/dev/zram")]
+
+    def arm(self, role):
+        if role != "operational":
+            return f"ERR ROLE {role}"
+        disk = self.disk_swap()
+        if disk:
+            return "ERR HIBERNATION_TARGET " + ",".join(disk)
+        active, inv = self.signer_state()
+        if active != "active":
+            return f"ERR SIGNER {active or 'unknown'}"
+        self.key.zeroize()
+        self.key.load()
+        if not self.key.loaded:
+            return "ERR KEY"
+        self.epoch += 1
+        self.state, self.reason = "armed", ""
+        self.until = time.monotonic() + TTL
+        self.signer_inv = inv
+        self.seen.clear()
+        self.offset = time.time() - time.monotonic()
+        log(f"armed epoch={self.epoch} ttl={TTL}")
+        return f"ARMED epoch={self.epoch} ttl={TTL}"
+
+    def dispatch(self, epoch, row):
+        now = time.monotonic()
+        if self.state != "armed":
+            return f"REJECT state={self.state}"
+        if str(self.epoch) != epoch:
+            return "REJECT epoch"
+        if row in self.seen:
+            return "REJECT seen"
+        if now < self.next_dispatch:
+            return "REJECT spacing"
+        self.seen.add(row)
+        self.next_dispatch = now + SPACING
+        return f"DISPATCHED {row} epoch={epoch} (inert)"
+
+    def tick(self):
+        now = time.monotonic()
+        if self.state in ("armed", "paused") and now >= self.until:
+            self.note("expiry")
+            self.disarm("expiry")
+        offset = time.time() - now
+        if abs(offset - self.offset) > 2.0:
+            self.note(f"clock-jump {offset - self.offset:+.0f}s")
+            if self.state == "armed":
+                self.state, self.reason = "paused", "clock-jump"
+                log("paused reason=clock-jump (fresh approval required)")
+            self.offset = offset
+        if self.state in ("armed", "paused"):
+            active, inv = self.signer_state()
+            if active != "active" or inv != self.signer_inv:
+                self.note(f"signer-failure {active}")
+                self.disarm("signer-failure")
+
+    def status(self):
+        ev = " ".join(f"{name.split()[0]}@{t:.1f}" for t, name in self.events[-20:])
+        inh = "held" if self.inhibitor and self.inhibitor.poll() is None else "none"
+        return (f"state={self.state} reason={self.reason or '-'} epoch={self.epoch} key_loaded={int(self.key.loaded)} "
+                f"key_addr={self.key.addr:#x} key_len={KEY_LEN} pid={os.getpid()} inhibitor={inh} "
+                f"ttl_left={max(0, self.until - time.monotonic()) if self.state != 'disarmed' else 0:.0f} "
+                f"gui_clients={len(self.gui)} events=[{ev}]")
+
+    # -- logind signals (gdbus monitor output) ---------------------------------------------
+    def logind(self, line):
+        if "Manager.PrepareForSleep (true" in line:
+            self.note("prepare-for-sleep")
+            if self.state != "disarmed":
+                self.disarm("sleep")
+            self.release_inhibitor()
+        elif "Manager.PrepareForSleep (false" in line:
+            self.note("resume")
+            self.take_inhibitor()
+        elif "Manager.PrepareForShutdown (true" in line:
+            self.note("prepare-for-shutdown")
+            if self.state != "disarmed":
+                self.disarm("shutdown")
+            self.release_inhibitor()
+        elif re.search(r"Session\.Lock \(\)", line):
+            self.note("screen-lock")
+        elif re.search(r"Session\.Unlock \(\)", line):
+            self.note("screen-unlock")
+        elif "Manager.SessionRemoved" in line:
+            self.note("logout")
+        elif "login1.Seat" in line and "ActiveSession" in line:
+            self.note("session-switch")
+
+    # -- control socket --------------------------------------------------------------------
+    def control(self, conn):
+        uid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+        conn.settimeout(2)
+        data = conn.recv(256)
+        words = data.decode("ascii", "replace").strip().split()
+        cmd = words[0] if words else ""
+        if cmd == "STATUS" and uid == 0:
+            return self.status(), False
+        if cmd == "ARM" and uid == self.custody_uid:
+            return self.arm(words[1] if len(words) > 1 else "operational"), False
+        if cmd == "HELLO" and uid == self.operator_uid:
+            self.note("gui-attach")
+            return "HELLO", True
+        if cmd == "DISPATCH" and uid == self.operator_uid and len(words) == 3:
+            return self.dispatch(words[1], words[2]), False
+        return "ERR PEER" if cmd in ("STATUS", "ARM", "HELLO", "DISPATCH") else "ERR REQUEST", False
+
+    def gui_event(self, conn):
+        try:
+            data = conn.recv(64)
+        except OSError:
+            data = b""
+        if data.strip() == b"BYE":
+            self.note("gui-close")
+        else:
+            self.note("gui-crash")    # connection ended without BYE
+        self.gui.pop(conn.fileno(), None)
+        return conn
+
+
+def main():
+    s = Scheduler(int(os.environ["WM006A_OPERATOR_UID"]), int(os.environ["WM006A_CUSTODY_UID"]))
+    run = os.environ.get("RUNTIME_DIRECTORY", "/run/wm006a-e10")
+    path = os.path.join(run, "ctl")
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    ls = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    ls.bind(path)
+    os.chmod(path, 0o666)      # authorization is by peer UID, not file mode
+    ls.listen(16)
+    mon = subprocess.Popen(["gdbus", "monitor", "--system", "--dest", "org.freedesktop.login1"],
+                           stdout=subprocess.PIPE, text=True, bufsize=1)
+    stop = {"flag": False}
+    signal.signal(signal.SIGTERM, lambda *_: stop.update(flag=True))
+    sel = selectors.DefaultSelector()
+    sel.register(ls, selectors.EVENT_READ, "ctl")
+    sel.register(mon.stdout, selectors.EVENT_READ, "logind")
+    log(f"e10 scheduler ready pid={os.getpid()} ttl={TTL} key_addr={s.key.addr:#x}")
+    while not stop["flag"]:
+        for key, _ in sel.select(timeout=0.5):
+            if key.data == "ctl":
+                conn, _ = ls.accept()
+                try:
+                    reply, keep = s.control(conn)
+                    conn.sendall((reply + "\n").encode())
+                except OSError:
+                    keep = False
+                if keep:
+                    s.gui[conn.fileno()] = conn
+                    sel.register(conn, selectors.EVENT_READ, "gui")
+                else:
+                    conn.close()
+            elif key.data == "logind":
+                line = mon.stdout.readline()
+                if line:
+                    s.logind(line)
+            elif key.data == "gui":
+                sel.unregister(key.fileobj)
+                s.gui_event(key.fileobj).close()
+        s.tick()
+    s.note("stop")
+    s.disarm("stop")
+    s.release_inhibitor()
+    mon.terminate()
+    log("e10 scheduler stopped")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,25 @@
+[Unit]
+Description=006A E10 lab scheduler (disposable synthetic key, inert dispatch)
+ConditionVirtualization=vm
+After=dbus.service systemd-logind.service
+
+[Service]
+Type=simple
+User=wm006a-e10
+EnvironmentFile=/etc/wm006a/peers
+Environment=WM006A_E10_TTL=45
+ExecStart=/var/opt/wm006a-e10/bin/wm006a-e10
+RuntimeDirectory=wm006a-e10
+RuntimeDirectoryMode=0755
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+UMask=0077
+LimitCORE=0

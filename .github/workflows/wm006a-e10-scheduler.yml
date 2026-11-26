@@ -1,0 +1,77 @@
+name: wm006a E10 scheduler lifecycle
+
+# Manual only. E10 with real Kinoite events in a disposable VM, using the lab scheduler in
+# wm006a-lab/e10 (disposable synthetic key, inert dispatch). A root-only probe checks whether the
+# key is cleared from the daemon's memory. Checks the VM cannot exercise are reported BLOCKED.
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_version:
+        description: "Fedora version for the guest (blank = newest stable)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wm006a-e10
+  cancel-in-progress: false
+
+jobs:
+  e10:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      FEDORA_VERSION: ${{ inputs.fedora_version }}
+      SKIP_DESKTOP: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: E10 daemon local key-handling and policy test
+        run: |
+          mkdir -p "$RUNNER_TEMP/e10"
+          sudo python3 wm006a-lab/e10/test_local.py wm006a-lab/e10 2>/dev/null | tee "$RUNNER_TEMP/e10/local-test.txt"
+
+      - name: Check and enable KVM
+        run: bash scripts/host/enable-kvm.sh
+
+      - name: Free disk space
+        run: bash scripts/host/free-disk.sh
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils skopeo podman
+          mkdir -p "$WORK/results/wm006a" && cp "$RUNNER_TEMP/e10/local-test.txt" "$WORK/results/wm006a/e10-local-test.txt"
+          awk '{s=$1; $1=""; sub(/^ /,""); n=$1; $1=""; sub(/^ /,""); if (s=="PASS"||s=="FAIL") printf "%s\te10-local\t%s\t%s\n", s, n, $0}' \
+            "$RUNNER_TEMP/e10/local-test.txt" > "$WORK/results/wm006a/build-results.tsv"
+
+      - name: Resolve Kinoite image
+        run: bash scripts/host/resolve-image.sh
+
+      - name: Build Kinoite disk image
+        run: bash scripts/host/build-image.sh
+
+      - name: Build wm006a native binary
+        run: bash wm006a-lab/host/build-artifacts.sh
+
+      - name: Run E10 lifecycle in the VM
+        run: bash wm006a-lab/host/run-e10.sh
+
+      - name: Summarize results
+        if: always()
+        run: bash wm006a-lab/host/summarize.sh
+
+      - name: Validation gate (E10 required checks)
+        if: always()
+        run: bash wm006a-lab/host/gate.sh wm006a-lab/required-checks-e10.txt
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wm006a-e10-results
+          path: ${{ env.WORK }}/results/wm006a
+          if-no-files-found: warn
+          retention-days: 30

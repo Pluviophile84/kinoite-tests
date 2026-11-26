@@ -103,6 +103,8 @@ def main():
             sys.exit(1)
         click(*pos, size)
         print(f"clicked '{phrase}' at {pos} on {size[0]}x{size[1]}")
+    elif cmd == "qmp":   # gui.py qmp COMMAND  -> print the QMP return value as JSON
+        print(json.dumps(Qmp().cmd(sys.argv[2])))
     elif cmd == "absent-text":
         phrase, name = sys.argv[2], sys.argv[3]
         pos, _, ws = find(shot(name), phrase)
