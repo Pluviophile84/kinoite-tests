@@ -22,6 +22,7 @@ EOF2
   info "tty-policy" "dev.tty.legacy_tiocsti=$(sysctl -n dev.tty.legacy_tiocsti 2>&1) tty9=$(stat -c '%U:%G %a' /dev/tty9) vcs9=$(stat -c '%U:%G %a' /dev/vcs9 2>&1) vcsa9=$(stat -c '%U:%G %a' /dev/vcsa9 2>&1) uinput=$(stat -c '%U:%G %a' /dev/uinput 2>&1) NAutoVTs=$(sed -n 's/^#*NAutoVTs=//p' /etc/systemd/logind.conf /usr/lib/systemd/logind.conf 2>/dev/null | head -n1)" ;;
 propose) runuser -u "$lab_operator" -- "$E3" client "$UI" "PROPOSE id=$1 from=LAB-001 to=LAB-002 amount=${2:-5} unit=TESTUNIT memo=synthetic" ;;
 start)
+  for _ in $(seq 20); do systemctl list-units --no-legend --state=active,activating,deactivating 'wm006a-e3-console@*' | grep -q . || break; sleep 0.5; done
   rm -f "$RES/result-$1"; systemctl reset-failed "wm006a-e3-console@$1.service" 2>/dev/null
   systemctl start "wm006a-e3-console@$1.service" && sleep 2 && echo "started on $(systemctl show "wm006a-e3-console@$1.service" -p TTYPath --value)" ;;
 result) if [[ -f "$RES/result-$1" ]]; then cat "$RES/result-$1"; else echo "pending unit=$(systemctl is-active "wm006a-e3-console@$1.service")"; fi ;;
@@ -32,9 +33,37 @@ screen) screen9 ;;
 code) screen9 | sed -n 's/.*CONFIRMATION CODE: \([0-9]\{6\}\).*/\1/p' | head -n1 ;;
 inject)   # guest root reads the console buffer and injects the code into tty9 with TIOCSTI
   code=$(screen9 | sed -n 's/.*CONFIRMATION CODE: \([0-9]\{6\}\).*/\1/p' | head -n1)
-  python3 -I -c 'import fcntl,sys,termios; fd=open("/dev/tty9","rb",buffering=0).fileno()
-for ch in (sys.argv[1]+"\n").encode(): fcntl.ioctl(fd, termios.TIOCSTI, bytes([ch]))
+  python3 -I -c 'import fcntl,sys,termios
+f = open("/dev/tty9", "rb", buffering=0)      # keep the file object alive while injecting
+for ch in (sys.argv[1]+"\n").encode(): fcntl.ioctl(f.fileno(), termios.TIOCSTI, bytes([ch]))
 print("injected", len(sys.argv[1]), "digits via TIOCSTI as root")' "$code" 2>&1 ;;
+uinput)   # uinput MODE [DIGITS] : as the operator, create a virtual keyboard and send keys
+  runuser -u "$lab_operator" -- python3 -I - "$@" <<'PY' 2>&1
+import fcntl, os, struct, sys, time
+UI_SET_EVBIT, UI_SET_KEYBIT, UI_DEV_SETUP, UI_DEV_CREATE, UI_DEV_DESTROY = 0x40045564, 0x40045565, 0x405C5503, 0x5501, 0x5502
+KEY = {str(d): 2 + (d - 1) % 10 for d in range(1, 11)}; KEY["0"] = 11
+ENTER, CTRL, ALT, F9 = 28, 29, 56, 67
+fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+fcntl.ioctl(fd, UI_SET_EVBIT, 1)
+for k in list(KEY.values()) + [ENTER, CTRL, ALT, F9]:
+    fcntl.ioctl(fd, UI_SET_KEYBIT, k)
+fcntl.ioctl(fd, UI_DEV_SETUP, struct.pack("HHHH80sI", 3, 0x1234, 0x5678, 1, b"wm006a-lab-synthetic-keyboard", 0))
+fcntl.ioctl(fd, UI_DEV_CREATE); time.sleep(1.5)
+def ev(t, c, v): os.write(fd, struct.pack("llHHi", 0, 0, t, c, v))
+def press(*keys):
+    for k in keys: ev(1, k, 1)
+    ev(0, 0, 0)
+    for k in reversed(keys): ev(1, k, 0)
+    ev(0, 0, 0); time.sleep(0.05)
+if sys.argv[1] == "vtswitch9":
+    press(CTRL, ALT, F9)
+elif sys.argv[1] == "type":
+    for ch in sys.argv[2]: press(KEY[ch])
+    press(ENTER)
+time.sleep(0.5); fcntl.ioctl(fd, UI_DEV_DESTROY)
+print(f"operator uinput {sys.argv[1]} sent")
+PY
+  ;;
 negatives)
   # The operator's graphical session must not be able to read, write, inject into or switch to
   # the approval terminal, nor start the agent.
@@ -44,8 +73,10 @@ try:
 except OSError as e: print(f"errno={e.errno} {e.strerror}")' "$1" "$2" 2>&1; }
   for spec in "/dev/tty9:1:write" "/dev/vcs9:0:read" "/dev/vcsa9:0:read" "/dev/uinput:1:write" "/dev/tty0:1:write"; do
     IFS=: read -r p mode what <<<"$spec"; r=$(opn "$p" "$mode")
-    [[ "$r" == errno=* ]] && pass "operator-cannot-$what-$(basename "$p")" "$r" || fail "operator-cannot-$what-$(basename "$p")" "$r"
+    [[ "$r" == errno=13* || "$r" == errno=1\ * ]] && pass "operator-cannot-$what-$(basename "$p")" "$r" || fail "operator-cannot-$what-$(basename "$p")" "$r"
   done
+  info "uinput-acl" "$(getfacl -p /dev/uinput 2>&1 | grep -v '^#' | xargs) | $(udevadm info -q property -n /dev/uinput | grep -E '^(TAGS|CURRENT_TAGS)=' | xargs)"
+  info "vcs9-perms" "$(stat -c '%U:%G %a' /dev/vcs9 /dev/vcsa9 2>&1 | xargs)"
   r=$(runuser -u "$lab_operator" -- chvt 9 2>&1); a=$(vt_active)
   [[ "$a" != tty9 ]] && pass "operator-cannot-switch-vt" "chvt 9 as operator: $(tail -n1 <<<"$r"); active VT still $a" || fail "operator-cannot-switch-vt" "active=$a $r"
   r=$(runuser -u "$lab_operator" -- systemctl start --no-ask-password wm006a-e3-console@P-0999.service 2>&1)

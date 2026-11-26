@@ -46,6 +46,7 @@ e3con-c3/changed-revision-rejected
 e3con-c3/signer-surfaces-new-revision
 e3con-c3/new-revision-approved
 e3con-c4/expired-rejected
+e3con-c6/operator-cannot-inject-into-agent-vt
 e3con-c5/injected-input-on-inactive-vt-refused
 e3con-final/records-only-console-approvals
 e3con-final/codes-not-logged

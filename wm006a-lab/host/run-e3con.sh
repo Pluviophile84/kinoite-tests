@@ -49,7 +49,6 @@ login=$(g login); echo "$login" > "$EVD/e3con-login.txt"
 [[ "$login" == session* ]] && hres PASS e3con-console operator-plasma-session "$login" || hres BLOCKED e3con-console operator-plasma-session "$login"
 sleep 10
 op_vt=$(c vt); hres INFO e3con-console sessions-before "$(c seat)"
-phase e3con negatives
 
 # C1  valid approval, after proving keystrokes typed on the operator's VT never reach tty9
 c propose P-0001 >/dev/null; c start P-0001 >/dev/null
@@ -69,6 +68,8 @@ note "C1 seat/VT at approval: $seat_at | agent: $r"
 [[ "$r" == *"result=approved:rev=1"* && "$r" == *"own_vt=tty9 active_vt=tty9"* ]] \
   && hres PASS e3con-c1 approved-on-active-agent-vt "$r" || hres FAIL e3con-c1 approved-on-active-agent-vt "$r"
 hres INFO e3con-c1 seat-and-vt-during-approval "$seat_at"
+# Negative checks once tty9 exists (vcs9/vcsa9 are only created when the VT is allocated).
+phase e3con negatives
 
 # C2  wrong code
 c propose P-0002 >/dev/null; c start P-0002 >/dev/null; code=$(read_code P-0002 c2-screen)
@@ -99,6 +100,23 @@ note "C5 injection: $inj"
 [[ "$r" == *"rejected:inactive-vt"* ]] && hres PASS e3con-c5 injected-input-on-inactive-vt-refused "$inj; $r" || hres FAIL e3con-c5 injected-input-on-inactive-vt-refused "$inj; $r"
 c screen | grep -o 'CONFIRMATION CODE: [0-9]*' | awk '{print $3}' >> "$CODES"
 hres INFO e3con-c5 guest-root-limit "guest root can read tty9 (/dev/vcs9) and inject with TIOCSTI; provenance stops it only while tty9 is inactive, so VT provenance does not defend against a compromised guest root"
+
+# C6  operator's uinput (granted by the active-session uaccess ACL): can it reach the agent's VT?
+to_vt "${op_vt#tty}" >/dev/null
+c propose P-0006 >/dev/null; c start P-0006 >/dev/null
+v0=$(c vt); u=$(c uinput vtswitch9); sleep 2; v1=$(c vt)
+note "C6 operator uinput Ctrl+Alt+F9: $v0 -> $v1 ($u)"
+hres INFO e3con-c6 operator-uinput-vt-switch "operator's virtual keyboard sent Ctrl+Alt+F9: active VT $v0 -> $v1"
+[[ "$v1" == tty9 ]] || to_vt 9 >/dev/null
+real=$(c code); echo "$real" >> "$CODES"; guess=999999; [[ "$real" == "$guess" ]] && guess=888888
+u=$(c uinput type "$guess"); r=$(wait_result P-0006)
+note "C6 operator uinput typed a guess: $u -> $r"
+if [[ "$r" == pending* ]]; then
+  hres PASS e3con-c6 operator-cannot-inject-into-agent-vt "operator's uinput keystrokes did not reach tty9: $r"
+else
+  hres FAIL e3con-c6 operator-cannot-inject-into-agent-vt "operator's uinput keyboard delivered a line to the approval VT while it was active: $r"
+fi
+hres INFO e3con-c6 code-confidentiality "the operator cannot read tty9 (vcs9/vcsa9 denied), so injected input cannot supply the right code; it can only submit guesses or stray input"
 
 phase e3con final "$(xargs < "$CODES")"
 hres BLOCKED e3con-physical physical-keyboard-routing "the VM receives input only through QEMU's virtual keyboard; routing from a physical keyboard to the active VT cannot be exercised here"
