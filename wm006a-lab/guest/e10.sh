@@ -18,14 +18,22 @@ capture() { local s; s=$(status); python3 -I "$PROBE10" capture "$(sv pid "$s")"
 # The wm006a sockets have no [Install] section, so after a boot the admin starts the full set (E1).
 signer_up() { systemctl start wm006a-ui.socket wm006a-custody.socket wm006a-gateway.socket
               runuser -u "$lab_operator" -- python3 "$PROBE" /run/wm006a/ui/sock 'UI_PING\n' 'OK UI+GATEWAY\n' >/dev/null 2>&1; }
-arm() {  # arm LABEL -> arms, captures, positive-control scan; echoes epoch
+arm() {  # arm LABEL -> ARM; every successful ARM is captured, logged and scanned (positive control)
   signer_up
   local r; r=$(talk wm006a-custody "ARM operational")
-  local e; e=$(sed -n 's/.*epoch=\([0-9]*\).*/\1/p' <<<"$r")
-  if [[ "$r" == ARMED* ]] && capture "$1" | grep -q nonzero=True && scan "$1" | grep -q 'full=1 .*slot=key'; then
-    pass "armed-key-present-$1" "$r; root probe finds the key exactly once in daemon memory"
+  local gid; gid=$(sed -n 's/.*grant=\([0-9a-f]*\.[0-9]*\).*/\1/p' <<<"$r")
+  if [[ "$r" == ARMED* ]]; then
+    printf '%s %s %s\n' "$1" "$gid" "$(date +%s.%N)" >> "$REF/armed.log"
+    if capture "$1" | grep -q nonzero=True && scan "$1" | grep -q 'full=1 .*slot=key'; then
+      pass "armed-key-present-$1" "$r; root probe finds the key exactly once in daemon memory"
+    else fail "armed-key-present-$1" "$r; capture or positive scan failed"; fi
   else fail "armed-key-present-$1" "$r"; fi
-  echo "$e" > "$REF/epoch-$1"
+  echo "$gid" > "$REF/grant-$1"
+}
+grant_of() { cat "$REF/grant-$1" 2>/dev/null; }
+fresh_succeeds() {  # fresh_succeeds LABEL : the newly armed grant must dispatch
+  local r; r=$(talk "$lab_operator" "DISPATCH $(grant_of "$1") fresh-$1")
+  [[ "$r" == DISPATCHED* ]] && pass "fresh-grant-succeeds-$1" "$r" || fail "fresh-grant-succeeds-$1" "$r"
 }
 event_seen() {  # event_seen NAME SINCE_MONO  -> daemon recorded the event after SINCE
   local s; s=$(status)
@@ -45,9 +53,10 @@ cleared() {  # cleared REASON LABEL
     pass "$1-disarmed-key-cleared" "state=disarmed reason=$1; root scan: $r"
   else fail "$1-disarmed-key-cleared" "$s | $r"; fi
 }
-old_epoch_rejected() {  # old_epoch_rejected LABEL
-  local r; r=$(talk "$lab_operator" "DISPATCH $(cat "$REF/epoch-$1") after-$1")
-  [[ "$r" == REJECT* ]] && pass "old-grant-rejected-after-$1" "$r" || fail "old-grant-rejected-after-$1" "$r"
+old_epoch_rejected() {  # old_epoch_rejected LABEL [EXPECTED_REASON]
+  local r; r=$(talk "$lab_operator" "DISPATCH $(grant_of "$1") after-$1")
+  if [[ "$r" == REJECT* && ( -z "${2:-}" || "$r" == "REJECT $2" ) ]]; then pass "old-grant-rejected-after-$1" "$(grant_of "$1") -> $r"
+  else fail "old-grant-rejected-after-$1" "$(grant_of "$1") -> $r (expected REJECT${2:+ $2})"; fi
 }
 op_sid() { loginctl list-sessions --no-legend | awk -v u="$lab_operator" '$3==u && $4=="seat0" && $6=="user"{print $1}' | head -n1; }
 
@@ -102,7 +111,7 @@ session)
     runuser -u "$lab_operator" -- python3 -I -c 'import os,signal,socket,sys,time; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b"HELLO\n"); s.recv(64); time.sleep(1); os.kill(os.getpid(), signal.SIGKILL)' "$CTL"
     sleep 2; preserved gui-crash session "$t"
     t=$(mono_now); loginctl terminate-session "$sid"; sleep 4; preserved logout session "$t"
-    r=$(talk "$lab_operator" "DISPATCH $(cat "$REF/epoch-session") row-after-session-events")
+    r=$(talk "$lab_operator" "DISPATCH $(grant_of session) row-after-session-events")
     [[ "$r" == DISPATCHED* ]] && pass "dispatch-after-preserving-events" "$r" || fail "dispatch-after-preserving-events" "$r"
   fi ;;
 
@@ -111,8 +120,8 @@ signer-failure)
   systemctl kill -s KILL --kill-whom=main wm006a-signer.service; sleep 3
   event_seen signer-failure "$t" && pass "signer-failure-observed" "SIGKILL of wm006a-signer seen by the scheduler" || fail "signer-failure-observed" "$(status)"
   cleared signer-failure sf; old_epoch_rejected sf
-  systemctl reset-failed wm006a-signer.service 2>/dev/null; signer_up
-  r=$(talk wm006a-custody "ARM operational"); [[ "$r" == ARMED* && "$r" != *"epoch=$(cat "$REF/epoch-sf") "* ]] && pass "explicit-rearm-after-signer-failure" "$r" || fail "explicit-rearm-after-signer-failure" "$r" ;;
+  systemctl reset-failed wm006a-signer.service 2>/dev/null
+  arm sf2 >/dev/null; old_epoch_rejected sf; fresh_succeeds sf2 ;;
 
 expiry)
   arm ex >/dev/null
@@ -125,10 +134,11 @@ clock-jump)
   s=$(status)
   event_seen clock-jump "$t" && [[ "$(sv state "$s")" == paused && "$(sv reason "$s")" == clock-jump ]] \
     && pass "clock-jump-pauses" "real +2h wall-clock step; $s" || fail "clock-jump-pauses" "$s"
-  r=$(talk "$lab_operator" "DISPATCH $(cat "$REF/epoch-cj") row-while-paused")
+  r=$(talk "$lab_operator" "DISPATCH $(grant_of cj) row-while-paused")
   [[ "$r" == "REJECT state=paused" ]] && pass "paused-dispatch-rejected" "$r" || fail "paused-dispatch-rejected" "$r"
-  signer_up; r=$(talk wm006a-custody "ARM operational"); s2=$(scan cj)
-  [[ "$r" == ARMED* ]] && grep -q 'full=0 half1=0 half2=0' <<<"$s2" && pass "fresh-approval-replaces-paused-key" "$r; old key gone: $s2" || fail "fresh-approval-replaces-paused-key" "$r | $s2"
+  arm cj2 >/dev/null; s2=$(scan cj)
+  [[ -n "$(grant_of cj2)" ]] && grep -q 'full=0 half1=0 half2=0' <<<"$s2" && pass "fresh-approval-replaces-paused-key" "new grant $(grant_of cj2); old key gone: $s2" || fail "fresh-approval-replaces-paused-key" "$s2"
+  old_epoch_rejected cj epoch; fresh_succeeds cj2
   date -s "-2 hours" >/dev/null; timedatectl set-ntp true; sleep 3 ;;
 
 stop)
@@ -142,9 +152,12 @@ stop)
   [[ "$res" == success ]] && grep -q 'No coredumps' <<<"$cd_out" && pass "stop-clean-exit-no-core" "Result=$res; no core dump for pid $p" || fail "stop-clean-exit-no-core" "Result=$res; $cd_out"
   systemctl start wm006a-e10.service; sleep 3; s=$(status)
   [[ "$(sv state "$s")" == disarmed && "$(sv reason "$s")" == start ]] && pass "restart-requires-rearm" "$s" || fail "restart-requires-rearm" "$s"
-  old_epoch_rejected st ;;
+  arm st2 >/dev/null
+  info "grants-across-restart" "before $(grant_of st), after $(grant_of st2)"
+  old_epoch_rejected st instance; fresh_succeeds st2 ;;
 
-pre-reboot) arm rb >/dev/null; pid > "$REF/pid-rb" ;;
+pre-reboot) arm rb >/dev/null; pid > "$REF/pid-rb"
+  scan rb >/dev/null; date +%s.%N > "$REF/last-mem-scan-before-reboot" ;;
 post-reboot)
   if [[ $(journalctl --list-boots --no-pager 2>/dev/null | wc -l) -lt 2 ]]; then
     blocked "reboot-zeroized-before-shutdown" "no persistent journal for the previous boot"
@@ -156,7 +169,28 @@ post-reboot)
   fi
   s=$(status)
   [[ "$(sv state "$s")" == disarmed && "$(sv reason "$s")" == start && "$(sv key_loaded "$s")" == 0 ]] && pass "boot-starts-disarmed" "$s" || fail "boot-starts-disarmed" "$s"
-  old_epoch_rejected rb ;;
+  arm rb2 >/dev/null
+  info "grants-across-reboot" "before $(grant_of rb), after $(grant_of rb2)"
+  old_epoch_rejected rb instance; fresh_succeeds rb2
+  # The interval no scan can cover: from the last memory scan before reboot until power-off.
+  gap=$(python3 - "$(cat "$REF/last-mem-scan-before-reboot")" <<'PY'
+import json, subprocess, sys
+def rows(*a):
+    out = subprocess.run(["journalctl", "--no-pager", "-o", "json", *a], capture_output=True, text=True).stdout
+    return [json.loads(l) for l in out.splitlines() if l.strip()]
+scan = float(sys.argv[1])
+prev = rows("-b", "-1")
+z = next((int(r["__REALTIME_TIMESTAMP"]) / 1e6 for r in prev if "zeroized reason=shutdown" in str(r.get("MESSAGE", ""))), None)
+end = int(prev[-1]["__REALTIME_TIMESTAMP"]) / 1e6 if prev else None
+cur = rows("-b", "0", "-n", "100000")
+start = int(cur[0]["__REALTIME_TIMESTAMP"]) / 1e6 if cur else None
+f = lambda v: "?" if v is None else f"{v - scan:+.2f}s"
+print(f"last_memory_scan=0.00s key_zeroized={f(z)} previous_boot_journal_ends={f(end)} new_boot_journal_starts={f(start)} ok={None not in (z, end, start)}")
+PY
+)
+  if grep -q 'ok=True' <<<"$gap"; then
+    pass "shutdown-gap-identified" "not memory-scanned: from the last scan to power-off (key zeroized at the offset shown, while the daemon still ran; the scan cannot run after the process exits, and guest RAM after power-off is not inspectable from inside). Disk and journal for the interval are covered by the final scan. $gap"
+  else fail "shutdown-gap-identified" "$gap"; fi ;;
 
 pre-suspend) arm sl >/dev/null; date '+%Y-%m-%d %H:%M:%S' > "$REF/since-sl" ;;
 suspend-now) systemd-run --quiet --on-active=3 --unit=wm006a-e10-suspend systemctl suspend && echo "suspend scheduled" ;;
@@ -179,18 +213,29 @@ PY
   info "suspend-kernel-lines" "$(grep -E 'PM: suspend (entry|exit)|ACPI: PM: (Preparing|Waking|Low-level)' "$EV/e10-suspend-journal.txt" | awk '{$1="";print}' | head -n 4 | tr '\n' ';')"
   cleared sleep sl; old_epoch_rejected sl
   s=$(status); [[ "$(sv inhibitor "$s")" == held ]] && pass "inhibitor-retaken-after-resume" "inhibitor=held" || fail "inhibitor-retaken-after-resume" "$s"
-  signer_up; r=$(talk wm006a-custody "ARM operational"); [[ "$r" == ARMED* ]] && pass "explicit-rearm-after-resume" "$r" || fail "explicit-rearm-after-resume" "$r" ;;
+  arm sl2 >/dev/null; old_epoch_rejected sl; fresh_succeeds sl2
+  info "suspend-coverage" "guest RAM is retained across S3, so the post-resume memory scan covers the sleep interval" ;;
 suspend-blocked) SUITE=e10-post-suspend; blocked "suspend-zeroized-before-sleep-entry" "$2"; blocked "sleep-disarmed-key-cleared" "$2" ;;
 
 hibernate)
   ch=$(busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate | cut -d' ' -f2 | tr -d '"')
   blocked "hibernate-disarms-and-clears" "VM cannot hibernate: logind CanHibernate=$ch, swap=[$(tail -n +2 /proc/swaps | awk '{print $1}' | xargs)], /sys/power/disk=[$(cat /sys/power/disk)]" ;;
 
-final)
-  labels=$(ls /run/wm006a-e10-probe 2>/dev/null | xargs)
-  r=$(python3 -I "$PROBE10" files $labels -- /var/lib /var/tmp /var/log /etc /var/opt /var/home 2>&1)
-  [[ $? -eq 0 ]] && pass "no-key-on-disk-or-journal" "$r (all $(wc -w <<<"$labels") captured keys)" || fail "no-key-on-disk-or-journal" "$r"
-  rm -rf /run/wm006a-e10-probe
-  [[ ! -e /run/wm006a-e10-probe ]] && pass "probe-copies-destroyed" "root-only captured copies removed from /run" || fail "probe-copies-destroyed" "still present"
-  journalctl -b -u wm006a-e10.service --no-pager -o short-monotonic > "$EV/e10-daemon-journal.txt" 2>&1 ;;
+coverage)   # coverage pre-reboot|final : every created key captured, every captured key searched for
+  SUITE="e10-coverage-$2"
+  created=$(journalctl -u wm006a-e10.service --no-pager -o cat | grep -c '^key-created ')
+  armed=$(wc -l < "$REF/armed.log")
+  labels=$(ls /var/lib/wm006a-lab-e10-probe 2>/dev/null | xargs); captured=$(wc -w <<<"$labels")
+  r=$(python3 -I "$PROBE10" files $labels -- /var/lib /var/tmp /var/log /etc /var/opt /var/home /var/cache 2>&1); rc=$?
+  scanned=$(sed -n 's/^keys=\([0-9]*\).*/\1/p' <<<"$r")
+  info "key-counts" "created=$created (daemon journal, all boots) armed=$armed (successful ARM replies) captured=$captured scanned=$scanned"
+  [[ "$created" -gt 0 && "$created" == "$armed" && "$armed" == "$captured" && "$captured" == "$scanned" ]] \
+    && pass "every-key-captured-and-scanned" "created=$created armed=$armed captured=$captured scanned=$scanned ($labels)" \
+    || fail "every-key-captured-and-scanned" "created=$created armed=$armed captured=$captured scanned=$scanned"
+  [[ $rc -eq 0 ]] && pass "no-key-on-disk-or-journal" "$r" || fail "no-key-on-disk-or-journal" "$r"
+  if [[ "$2" == final ]]; then
+    rm -rf /var/lib/wm006a-lab-e10-probe
+    [[ ! -e /var/lib/wm006a-lab-e10-probe ]] && pass "probe-copies-destroyed" "root-only captured copies removed" || fail "probe-copies-destroyed" "still present"
+    journalctl -u wm006a-e10.service --no-pager -o short-monotonic > "$EV/e10-daemon-journal.txt" 2>&1
+  fi ;;
 esac

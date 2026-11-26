@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """Root-only memory probe for the E10 lab daemon. Never prints key bytes.
 
-  e10_probe.py capture PID ADDR LABEL   read KEY_LEN bytes at ADDR into /run/wm006a-e10-probe/LABEL (0600)
+  e10_probe.py capture PID ADDR LABEL   read KEY_LEN bytes at ADDR into STORE/LABEL (0600, complemented)
   e10_probe.py scan PID LABEL           count occurrences of the captured key (and each half) in every
                                         readable mapping of PID; report whether ADDR now holds zeros
   e10_probe.py files LABEL... -- PATH...  search files/dirs (and the journal) for any captured key
@@ -13,7 +13,9 @@ import subprocess
 import sys
 
 KEY_LEN = 32
-STORE = "/run/wm006a-e10-probe"
+# Durable root-only store (survives reboot). Stored as the bitwise complement of the key, so the
+# raw key and its hex form never appear on disk and the disk/journal search stays meaningful.
+STORE = "/var/lib/wm006a-lab-e10-probe"
 
 
 def regions(pid):
@@ -32,7 +34,7 @@ def read(pid, addr, n):
 def load(label):
     with open(os.path.join(STORE, label), "rb") as f:
         data = f.read()
-    addr, key = int.from_bytes(data[:8], "little"), data[8:]
+    addr, key = int.from_bytes(data[:8], "little"), bytes(b ^ 0xFF for b in data[8:])
     return addr, key
 
 
@@ -43,7 +45,7 @@ def main():
         key = read(pid, addr, KEY_LEN)
         os.makedirs(STORE, mode=0o700, exist_ok=True)
         fd = os.open(os.path.join(STORE, label), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.write(fd, addr.to_bytes(8, "little") + key)
+        os.write(fd, addr.to_bytes(8, "little") + bytes(b ^ 0xFF for b in key))
         os.close(fd)
         print(f"captured label={label} nonzero={any(key)} sha256={hashlib.sha256(key).hexdigest()[:16]}")
         sys.exit(0 if any(key) else 1)

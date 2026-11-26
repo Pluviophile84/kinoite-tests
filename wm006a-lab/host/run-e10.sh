@@ -44,6 +44,7 @@ phase e10 stop
 
 # Reboot: key must be zeroized under the delay inhibitor before shutdown; boot starts disarmed.
 phase e10 pre-reboot
+phase e10 coverage pre-reboot
 b0=$("$VM" boot-id)
 if "$VM" reboot; then hres PASS e10-reboot rebooted "boot ${b0:0:8} -> $("$VM" boot-id | cut -c1-8)"; phase e10 post-reboot
 else hres FAIL e10-reboot rebooted "VM did not come back"; fi
@@ -69,7 +70,7 @@ else
   phase e10 suspend-blocked guest-did-not-enter-suspend
 fi
 phase e10 hibernate
-phase e10 final
+phase e10 coverage final
 
 hres SKIP scope app-internal-events "vault-lock, engine-failure, cancel, network-down and gateway-failed have no real component in the VM; covered by the offline E10 model"
 hres SKIP scope physical-host-sleep "lid, firmware S3 on real hardware and physical-host memory examination are separate tests"

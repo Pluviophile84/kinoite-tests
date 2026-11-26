@@ -16,10 +16,13 @@ probe can scan this process's memory.
 Control socket /run/wm006a-e10/ctl (peer UID decides what is allowed):
   root:     STATUS
   custody:  ARM [operational|treasury|watch-only]   (stands in for trusted console approval)
-  operator: HELLO (GUI attach), BYE (GUI close), DISPATCH <epoch> <row>
+  operator: HELLO (GUI attach), BYE (GUI close), DISPATCH <grant> <row>
+A grant ID is <instance>.<epoch>; the instance is random per daemon start, so a grant from an
+earlier process can never match a grant issued after a restart or reboot.
 """
 import ctypes
 import mmap
+import secrets
 import os
 import re
 import selectors
@@ -71,6 +74,8 @@ class Scheduler:
         self.operator_uid, self.custody_uid = operator_uid, custody_uid
         self.key = Key()
         self.state, self.reason, self.epoch = "disarmed", "start", 0
+        self.instance = secrets.token_hex(6)
+        self.keys_created = 0
         self.until = 0.0
         self.seen, self.next_dispatch = set(), 0.0
         self.events = []               # (monotonic, name) of real events observed
@@ -133,20 +138,27 @@ class Scheduler:
         self.key.load()
         if not self.key.loaded:
             return "ERR KEY"
+        self.keys_created += 1
         self.epoch += 1
         self.state, self.reason = "armed", ""
         self.until = time.monotonic() + TTL
         self.signer_inv = inv
         self.seen.clear()
         self.offset = time.time() - time.monotonic()
-        log(f"armed epoch={self.epoch} ttl={TTL}")
-        return f"ARMED epoch={self.epoch} ttl={TTL}"
+        log(f"armed grant={self.grant()} ttl={TTL}")
+        log(f"key-created instance={self.instance} n={self.keys_created} grant={self.grant()}")
+        return f"ARMED grant={self.grant()} epoch={self.epoch} ttl={TTL}"
 
-    def dispatch(self, epoch, row):
+    def grant(self):
+        return f"{self.instance}.{self.epoch}"
+
+    def dispatch(self, grant, row):
         now = time.monotonic()
         if self.state != "armed":
             return f"REJECT state={self.state}"
-        if str(self.epoch) != epoch:
+        if grant.partition(".")[0] != self.instance:
+            return "REJECT instance"
+        if grant != self.grant():
             return "REJECT epoch"
         if row in self.seen:
             return "REJECT seen"
@@ -154,7 +166,7 @@ class Scheduler:
             return "REJECT spacing"
         self.seen.add(row)
         self.next_dispatch = now + SPACING
-        return f"DISPATCHED {row} epoch={epoch} (inert)"
+        return f"DISPATCHED {row} grant={grant} (inert)"
 
     def tick(self):
         now = time.monotonic()
@@ -177,7 +189,8 @@ class Scheduler:
     def status(self):
         ev = " ".join(f"{name.split()[0]}@{t:.1f}" for t, name in self.events[-20:])
         inh = "held" if self.inhibitor and self.inhibitor.poll() is None else "none"
-        return (f"state={self.state} reason={self.reason or '-'} epoch={self.epoch} key_loaded={int(self.key.loaded)} "
+        return (f"state={self.state} reason={self.reason or '-'} instance={self.instance} epoch={self.epoch} "
+                f"keys_created={self.keys_created} key_loaded={int(self.key.loaded)} "
                 f"key_addr={self.key.addr:#x} key_len={KEY_LEN} pid={os.getpid()} inhibitor={inh} "
                 f"ttl_left={max(0, self.until - time.monotonic()) if self.state != 'disarmed' else 0:.0f} "
                 f"gui_clients={len(self.gui)} events=[{ev}]")
@@ -256,7 +269,7 @@ def main():
     sel = selectors.DefaultSelector()
     sel.register(ls, selectors.EVENT_READ, "ctl")
     sel.register(mon.stdout, selectors.EVENT_READ, "logind")
-    log(f"e10 scheduler ready pid={os.getpid()} ttl={TTL} key_addr={s.key.addr:#x}")
+    log(f"e10 scheduler ready pid={os.getpid()} instance={s.instance} ttl={TTL} key_addr={s.key.addr:#x}")
     while not stop["flag"]:
         for key, _ in sel.select(timeout=0.5):
             if key.data == "ctl":
